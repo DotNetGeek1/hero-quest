@@ -18,6 +18,7 @@ export type ActorState = {
   maxHealth: number;
   knownSpells?: string[];
   equipment?: string[];
+  statusEffects?: StatusEffectState[];
 };
 
 export type BoardAreaKind = "room" | "corridor" | "exterior";
@@ -38,6 +39,22 @@ export type VisibilityState = {
   mode: VisibilityMode;
   visionRange: number;
   discovered: Record<string, string[]>;
+  triggerHistory: Record<string, boolean>;
+};
+
+export type VisibilityTriggerOwner =
+  | { type: "actor"; actorId: string }
+  | { type: "faction"; faction: ActorFaction }
+  | { type: "global" };
+
+export type VisibilityRevealSource = "search" | "door" | "script";
+
+export type VisibilityTrigger = {
+  id: string;
+  source: Exclude<VisibilityRevealSource, "search">;
+  owner?: VisibilityTriggerOwner;
+  areaIds?: string[];
+  tiles?: Vector2[];
 };
 
 export type DiscoverableType = "trap" | "secret-door" | "treasure";
@@ -84,7 +101,24 @@ export type TurnState = {
 
 export type SpellEffect =
   | { type: "damage"; amount: number }
-  | { type: "heal"; amount: number };
+  | { type: "heal"; amount: number }
+  | {
+      type: "move";
+      delta?: Vector2;
+      destination?: Vector2;
+      ignoreCollisions?: boolean;
+    }
+  | { type: "buff"; stat: StatusModifierStat; amount: number }
+  | { type: "status"; effect: StatusEffectState };
+
+export type StatusModifierStat = "attackDice" | "defenseDice" | "movement" | "maxHealth";
+
+export type StatusEffectState = {
+  id: string;
+  name: string;
+  duration: number;
+  modifiers?: Partial<Record<StatusModifierStat, number>>;
+};
 
 export type TargetingProfile = {
   type: "self" | "ally" | "enemy";
@@ -220,6 +254,14 @@ export type SearchPerformedEvent = {
   discoveries: SearchDiscovery[];
 };
 
+export type TilesRevealedEvent = {
+  type: "tilesRevealed";
+  ownerKey: string;
+  tiles: Vector2[];
+  source: VisibilityRevealSource;
+  triggerId?: string;
+};
+
 export type SpellCastEvent = {
   type: "spellCast";
   casterId: string;
@@ -242,6 +284,7 @@ export type GameEvent =
   | TurnEndedEvent
   | AttackResolvedEvent
   | SearchPerformedEvent
+  | TilesRevealedEvent
   | SpellCastEvent
   | EquipmentUsedEvent;
 

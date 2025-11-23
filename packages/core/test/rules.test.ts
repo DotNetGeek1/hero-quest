@@ -4,6 +4,7 @@ import {
   createGameState,
   currentActorId,
   rulesEngine,
+  triggerVisibilityReveal,
   validateAction,
 } from "../src";
 import { Action, GameState } from "../src/types";
@@ -510,16 +511,23 @@ describe("rulesEngine.applyAction", () => {
         reason: "You cannot search while enemies are present",
       });
 
-      state.actors["monster-1"].health = 0;
-      expect(validateAction(state, searchAction)).toEqual({ ok: true });
+        state.actors["monster-1"].health = 0;
+        expect(validateAction(state, searchAction)).toEqual({ ok: true });
 
-      const { state: afterSearch, events } = applyAction(state, searchAction);
-      expect(afterSearch.discoverables["trap-1"].revealed).toBe(true);
-      expect(events[0]).toMatchObject({
-        type: "searchPerformed",
-        actorId: "hero-1",
-        discoveries: [{ id: "trap-1", type: "trap" }],
-      });
+        const { state: afterSearch, events } = applyAction(state, searchAction);
+        expect(afterSearch.discoverables["trap-1"].revealed).toBe(true);
+        expect(events[0]).toMatchObject({
+          type: "searchPerformed",
+          actorId: "hero-1",
+          discoveries: [{ id: "trap-1", type: "trap" }],
+        });
+        const tilesEvent = events.find((event) => event.type === "tilesRevealed");
+        expect(tilesEvent).toMatchObject({
+          type: "tilesRevealed",
+          ownerKey: "global",
+          source: "search",
+        });
+        expect((tilesEvent as any).tiles).toHaveLength(4);
 
       expect(() => applyAction(afterSearch, searchAction)).toThrow(
         "This area has already been searched for that"
@@ -608,7 +616,7 @@ describe("rulesEngine.applyAction", () => {
       });
     });
 
-    it("consumes a damaging consumable when used", () => {
+      it("consumes a damaging consumable when used", () => {
       const board = { width: 4, height: 4, blocked: [] };
       const actors = [
         {
@@ -671,6 +679,219 @@ describe("rulesEngine.applyAction", () => {
         effects: [{ type: "damage", amount: 2 }],
         consumed: true,
       });
+    });
+      it("repositions a target using spell move effects", () => {
+        const board = { width: 4, height: 4, blocked: [] };
+        const actors = [
+          {
+            id: "hero-1",
+            name: "Wizard",
+            faction: "hero" as const,
+            position: { x: 0, y: 0 },
+            movement: 5,
+            attackDice: 2,
+            attackRange: 2,
+            defenseDice: 2,
+            health: 5,
+            maxHealth: 5,
+            knownSpells: ["gust"],
+          },
+          {
+            id: "hero-2",
+            name: "Barbarian",
+            faction: "hero" as const,
+            position: { x: 0, y: 1 },
+            movement: 4,
+            attackDice: 3,
+            attackRange: 1,
+            defenseDice: 2,
+            health: 6,
+            maxHealth: 6,
+          },
+        ];
+
+        const cards = {
+          spells: {
+            gust: {
+              id: "gust",
+              name: "Gust of Wind",
+              school: "air",
+              target: { type: "ally", range: 3 },
+              effects: [{ type: "move", delta: { x: 1, y: 0 } }],
+            },
+          },
+          equipment: {},
+        };
+
+        const state = createGameState({ board, actors, cards });
+        const action: Action = {
+          type: "castSpell",
+          casterId: "hero-1",
+          spellId: "gust",
+          targetId: "hero-2",
+        };
+
+        const { state: afterSpell } = applyAction(state, action);
+        expect(afterSpell.actors["hero-2"].position).toEqual({ x: 1, y: 1 });
+      });
+
+      it("applies buffs and statuses from equipment effects", () => {
+        const board = { width: 4, height: 4, blocked: [] };
+        const actors = [
+          {
+            id: "hero-1",
+            name: "Captain",
+            faction: "hero" as const,
+            position: { x: 0, y: 0 },
+            movement: 5,
+            attackDice: 2,
+            attackRange: 1,
+            defenseDice: 2,
+            health: 6,
+            maxHealth: 6,
+            equipment: ["battle-banner"],
+          },
+        ];
+
+        const cards = {
+          spells: {},
+          equipment: {
+            "battle-banner": {
+              id: "battle-banner",
+              name: "Battle Banner",
+              slot: "trinket" as const,
+              target: { type: "self", range: 0 },
+              effects: [
+                { type: "buff", stat: "attackDice", amount: 1 },
+                {
+                  type: "status",
+                  effect: {
+                    id: "battle-lust",
+                    name: "Battle Lust",
+                    duration: 2,
+                    modifiers: { defenseDice: 1 },
+                  },
+                },
+              ],
+            },
+          },
+        };
+
+        const state = createGameState({ board, actors, cards });
+        const action: Action = {
+          type: "useEquipment",
+          actorId: "hero-1",
+          equipmentId: "battle-banner",
+        };
+
+        const { state: afterUse } = applyAction(state, action);
+        expect(afterUse.actors["hero-1"].attackDice).toBe(3);
+        expect(afterUse.actors["hero-1"].defenseDice).toBe(3);
+        expect(afterUse.actors["hero-1"].statusEffects).toEqual([
+          { id: "battle-lust", name: "Battle Lust", duration: 2, modifiers: { defenseDice: 1 } },
+        ]);
+      });
+    });
+
+    describe("visibility triggers", () => {
+    const board = {
+      width: 4,
+      height: 4,
+      blocked: [],
+      areas: [
+        {
+          id: "room-1",
+          name: "Entry",
+          kind: "room" as const,
+          tiles: [
+            { x: 0, y: 0 },
+            { x: 1, y: 0 },
+            { x: 0, y: 1 },
+            { x: 1, y: 1 },
+          ],
+        },
+      ],
+    };
+
+    const baseActors = [
+      {
+        id: "hero-1",
+        name: "Barbarian",
+        faction: "hero" as const,
+        position: { x: 0, y: 0 },
+        movement: 4,
+        attackDice: 3,
+        attackRange: 1,
+        defenseDice: 2,
+        health: 8,
+        maxHealth: 8,
+      },
+      {
+        id: "hero-2",
+        name: "Elf",
+        faction: "hero" as const,
+        position: { x: 2, y: 2 },
+        movement: 6,
+        attackDice: 2,
+        attackRange: 4,
+        defenseDice: 2,
+        health: 6,
+        maxHealth: 6,
+      },
+    ];
+
+    const perActorVisibility = {
+      mode: "per-actor" as const,
+      visionRange: Infinity,
+      discovered: {},
+      triggerHistory: {},
+    };
+
+    it("reveals area tiles once for actor-owned door triggers", () => {
+      const state = createGameState({
+        board,
+        actors: baseActors,
+        visibility: perActorVisibility,
+      });
+
+      const trigger = {
+        id: "door-1",
+        source: "door" as const,
+        owner: { type: "actor" as const, actorId: "hero-1" },
+        areaIds: ["room-1"],
+      };
+
+      const first = triggerVisibilityReveal(state, trigger);
+      expect(first.events).toHaveLength(1);
+      expect(first.events[0]).toMatchObject({
+        type: "tilesRevealed",
+        ownerKey: "hero-1",
+        source: "door",
+      });
+      expect(first.state.visibility.triggerHistory["door-1"]).toBe(true);
+
+      const second = triggerVisibilityReveal(first.state, trigger);
+      expect(second.events).toHaveLength(0);
+    });
+
+    it("applies faction visibility triggers across all actors when needed", () => {
+      const state = createGameState({
+        board,
+        actors: baseActors,
+        visibility: perActorVisibility,
+      });
+
+      const trigger = {
+        id: "script-1",
+        source: "script" as const,
+        owner: { type: "faction" as const, faction: "hero" as const },
+        areaIds: ["room-1"],
+      };
+
+      const result = triggerVisibilityReveal(state, trigger);
+      expect(result.events).toHaveLength(2);
+      const ownerKeys = result.events.map((event) => event.ownerKey).sort();
+      expect(ownerKeys).toEqual(["hero-1", "hero-2"]);
     });
   });
 });

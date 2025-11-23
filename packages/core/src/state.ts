@@ -9,9 +9,12 @@ import {
   SearchRulesConfig,
   SearchState,
   SearchType,
+  TilesRevealedEvent,
   TurnState,
   Vector2,
   VisibilityState,
+  VisibilityTrigger,
+  VisibilityTriggerOwner,
 } from "./types";
 
 export type CreateGameStateParams = {
@@ -34,6 +37,7 @@ const DEFAULT_VISIBILITY_STATE: VisibilityState = {
   mode: "global",
   visionRange: Infinity,
   discovered: {},
+  triggerHistory: {},
 };
 
 const EMPTY_CARD_CATALOG: CardCatalog = {
@@ -92,6 +96,19 @@ export function createGameState({
     movementRemaining,
   };
 
+  const normalizedVisibility: VisibilityState = visibility
+    ? {
+        mode: visibility.mode ?? DEFAULT_VISIBILITY_STATE.mode,
+        visionRange: visibility.visionRange ?? DEFAULT_VISIBILITY_STATE.visionRange,
+        discovered: { ...visibility.discovered },
+        triggerHistory: { ...(visibility.triggerHistory ?? {}) },
+      }
+    : {
+        ...DEFAULT_VISIBILITY_STATE,
+        discovered: { ...DEFAULT_VISIBILITY_STATE.discovered },
+        triggerHistory: { ...DEFAULT_VISIBILITY_STATE.triggerHistory },
+      };
+
   return {
     board,
     actors: actorsById,
@@ -104,12 +121,7 @@ export function createGameState({
         spells: { ...EMPTY_CARD_CATALOG.spells },
         equipment: { ...EMPTY_CARD_CATALOG.equipment },
       },
-    visibility:
-      visibility ??
-      {
-        ...DEFAULT_VISIBILITY_STATE,
-        discovered: { ...DEFAULT_VISIBILITY_STATE.discovered },
-      },
+      visibility: normalizedVisibility,
   };
 }
 
@@ -352,4 +364,119 @@ export function mergeVisibility(
       [ownerKey]: Array.from(merged),
     },
   };
+}
+
+function getTilesForAreas(board: BoardState, areaIds: string[] = []): Vector2[] {
+  if (!board.areas || board.areas.length === 0) {
+    return [];
+  }
+  const tiles: Vector2[] = [];
+  areaIds.forEach((areaId) => {
+    const area = board.areas?.find((candidate) => candidate.id === areaId);
+    if (area) {
+      tiles.push(...area.tiles);
+    }
+  });
+  return tiles;
+}
+
+function dedupeTiles(tiles: Vector2[]): Vector2[] {
+  const seen = new Set<string>();
+  const result: Vector2[] = [];
+  tiles.forEach((tile) => {
+    const key = tileKey(tile);
+    if (!seen.has(key)) {
+      seen.add(key);
+      result.push(tile);
+    }
+  });
+  return result;
+}
+
+function resolveVisibilityOwnerKeys(
+  state: GameState,
+  owner?: VisibilityTriggerOwner
+): string[] {
+  if (!owner) {
+    return ["global"];
+  }
+
+  if (owner.type === "global") {
+    return ["global"];
+  }
+
+  if (owner.type === "actor") {
+    return [getVisibilityOwnerKey(state, owner.actorId)];
+  }
+
+  if (state.visibility.mode === "per-faction") {
+    return [owner.faction];
+  }
+
+  if (state.visibility.mode === "per-actor") {
+    const matchingActors = Object.values(state.actors).filter(
+      (actor) => actor.faction === owner.faction && actor.health > 0
+    );
+    return matchingActors.map((actor) => actor.id);
+  }
+
+  return ["global"];
+}
+
+function recordVisibilityTrigger(visibility: VisibilityState, triggerId: string): VisibilityState {
+  return {
+    ...visibility,
+    triggerHistory: {
+      ...visibility.triggerHistory,
+      [triggerId]: true,
+    },
+  };
+}
+
+function applyTilesReveal(
+  visibility: VisibilityState,
+  ownerKey: string,
+  tiles: Vector2[]
+): { visibility: VisibilityState; newlyRevealed: Vector2[] } {
+  const before = new Set(visibility.discovered[ownerKey] ?? []);
+  const nextVisibility = mergeVisibility(visibility, ownerKey, tiles);
+  const newlyRevealed = tiles.filter((tile) => !before.has(tileKey(tile)));
+  return { visibility: nextVisibility, newlyRevealed };
+}
+
+export function triggerVisibilityReveal(
+  state: GameState,
+  trigger: VisibilityTrigger
+): { state: GameState; events: TilesRevealedEvent[] } {
+  const nextState = cloneGameState(state);
+  if (nextState.visibility.triggerHistory[trigger.id]) {
+    return { state: nextState, events: [] };
+  }
+
+  const areaTiles = getTilesForAreas(nextState.board, trigger.areaIds ?? []);
+  const tiles = dedupeTiles([...(trigger.tiles ?? []), ...areaTiles]);
+  nextState.visibility = recordVisibilityTrigger(nextState.visibility, trigger.id);
+
+  if (tiles.length === 0) {
+    return { state: nextState, events: [] };
+  }
+
+  const ownerKeys = resolveVisibilityOwnerKeys(nextState, trigger.owner);
+  const events: TilesRevealedEvent[] = [];
+
+  ownerKeys.forEach((ownerKey) => {
+    const { visibility, newlyRevealed } = applyTilesReveal(nextState.visibility, ownerKey, tiles);
+    nextState.visibility = visibility;
+    if (newlyRevealed.length > 0) {
+      events.push({
+        type: "tilesRevealed",
+        ownerKey,
+        tiles: newlyRevealed,
+        source: trigger.source,
+        triggerId: trigger.id,
+      });
+    }
+  });
+
+  return { state: nextState, events };
 }

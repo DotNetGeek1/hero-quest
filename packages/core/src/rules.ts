@@ -14,7 +14,8 @@ import {
   SearchPerformedEvent,
   SearchType,
   SpellCastEvent,
-  SpellEffect,
+    SpellEffect,
+    StatusModifierStat,
   TargetingProfile,
   UseEquipmentAction,
   ValidationResult,
@@ -34,6 +35,7 @@ import {
   manhattanDistance,
   mergeVisibility,
   getVisibilityOwnerKey,
+  tileKey,
 } from "./state";
 
 function countFaces(roll: DieFace[], face: DieFace): number {
@@ -101,12 +103,102 @@ function resolveTargetActor(
   return { ok: true, target };
 }
 
-function applyEffectsToActor(target: ActorState, effects: SpellEffect[]) {
+function applyStatAdjustment(target: ActorState, stat: StatusModifierStat, delta: number) {
+  switch (stat) {
+    case "movement":
+      target.movement = Math.max(0, target.movement + delta);
+      break;
+    case "attackDice":
+      target.attackDice = Math.max(0, target.attackDice + delta);
+      break;
+    case "defenseDice":
+      target.defenseDice = Math.max(0, target.defenseDice + delta);
+      break;
+    case "maxHealth":
+      target.maxHealth = Math.max(1, target.maxHealth + delta);
+      target.health = Math.min(target.health, target.maxHealth);
+      break;
+    default:
+      break;
+  }
+}
+
+function applyMoveEffect(state: GameState, target: ActorState, effect: Extract<SpellEffect, { type: "move" }>) {
+  const destination =
+    effect.destination ??
+    (effect.delta
+      ? {
+          x: target.position.x + effect.delta.x,
+          y: target.position.y + effect.delta.y,
+        }
+      : undefined);
+
+  if (!destination) {
+    return;
+  }
+
+  if (destination.x === target.position.x && destination.y === target.position.y) {
+    return;
+  }
+
+  if (!isWithinBounds(state.board, destination)) {
+    return;
+  }
+
+  if (!effect.ignoreCollisions) {
+    if (isBlocked(state.board, destination)) {
+      return;
+    }
+
+    const occupied = Object.values(state.actors).some(
+      (actor) =>
+        actor.id !== target.id &&
+        actor.health > 0 &&
+        actor.position.x === destination.x &&
+        actor.position.y === destination.y
+    );
+
+    if (occupied) {
+      return;
+    }
+  }
+
+  target.position = destination;
+}
+
+function applyStatusEffect(target: ActorState, effect: Extract<SpellEffect, { type: "status" }>["effect"]) {
+  target.statusEffects = target.statusEffects ?? [];
+  target.statusEffects = target.statusEffects.filter((existing) => existing.id !== effect.id);
+  target.statusEffects.push({ ...effect });
+}
+
+function applyEffectsToActor(state: GameState, target: ActorState, effects: SpellEffect[]) {
   effects.forEach((effect) => {
-    if (effect.type === "damage") {
-      target.health = Math.max(0, target.health - effect.amount);
-    } else if (effect.type === "heal") {
-      target.health = Math.min(target.maxHealth, target.health + effect.amount);
+    switch (effect.type) {
+      case "damage":
+        target.health = Math.max(0, target.health - effect.amount);
+        break;
+      case "heal":
+        target.health = Math.min(target.maxHealth, target.health + effect.amount);
+        break;
+      case "move":
+        applyMoveEffect(state, target, effect);
+        break;
+      case "buff":
+        applyStatAdjustment(target, effect.stat, effect.amount);
+        break;
+      case "status":
+        applyStatusEffect(target, effect.effect);
+        if (effect.effect.modifiers) {
+          Object.entries(effect.effect.modifiers).forEach(([stat, amount]) => {
+            if (typeof amount === "number") {
+              applyStatAdjustment(target, stat as StatusModifierStat, amount);
+            }
+          });
+        }
+        break;
+      default:
+        break;
     }
   });
 }
@@ -376,7 +468,9 @@ function applySearch(state: GameState, action: SearchAction) {
   recordSearchOccurrence(nextState.searchState, area.id, actor.id, action.searchType);
 
   const ownerKey = getVisibilityOwnerKey(nextState, actor.id);
+  const previouslyVisible = new Set(nextState.visibility.discovered[ownerKey] ?? []);
   nextState.visibility = mergeVisibility(nextState.visibility, ownerKey, area.tiles);
+  const newlyRevealed = area.tiles.filter((tile) => !previouslyVisible.has(tileKey(tile)));
 
   const events: GameEvent[] = [
     {
@@ -391,6 +485,16 @@ function applySearch(state: GameState, action: SearchAction) {
       })),
     } satisfies SearchPerformedEvent,
   ];
+
+  if (newlyRevealed.length > 0) {
+    events.push({
+      type: "tilesRevealed",
+      ownerKey,
+      tiles: newlyRevealed,
+      source: "search",
+      triggerId: `search:${area.id}:${action.searchType}`,
+    });
+  }
 
   return { state: nextState, events };
 }
@@ -408,7 +512,7 @@ function applyCastSpell(state: GameState, action: CastSpellAction) {
     throw new Error(targeting.reason);
   }
 
-  applyEffectsToActor(targeting.target, spell.effects);
+    applyEffectsToActor(nextState, targeting.target, spell.effects);
 
   const events: GameEvent[] = [
     {
@@ -436,7 +540,7 @@ function applyUseEquipment(state: GameState, action: UseEquipmentAction) {
     throw new Error(targeting.reason);
   }
 
-  applyEffectsToActor(targeting.target, equipment.effects);
+    applyEffectsToActor(nextState, targeting.target, equipment.effects);
 
   let consumed = false;
   if (equipment.consumable && actor.equipment) {
