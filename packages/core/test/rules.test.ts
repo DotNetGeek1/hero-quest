@@ -49,6 +49,26 @@ describe("rulesEngine.validateAction", () => {
     expect(result.ok).toBe(false);
   });
 
+  it("rejects actions initiated by defeated actors", () => {
+    const state = buildGameState();
+    state.actors["hero-1"].health = 0;
+
+    const moveAction: Action = { type: "move", actorId: "hero-1", to: { x: 1, y: 0 } };
+    expect(validateAction(state, moveAction)).toEqual({ ok: false, reason: "Actor is defeated" });
+
+    const attackAction: Action = {
+      type: "attack",
+      attackerId: "hero-1",
+      targetId: "monster-1",
+      attackRoll: ["skull", "skull", "skull"],
+      defenseRoll: ["black-shield", "white-shield"],
+    };
+    expect(validateAction(state, attackAction)).toEqual({ ok: false, reason: "Attacker is defeated" });
+
+    const endTurnAction: Action = { type: "endTurn", actorId: "hero-1" };
+    expect(validateAction(state, endTurnAction)).toEqual({ ok: false, reason: "Actor is defeated" });
+  });
+
   it("rejects moves that exceed remaining movement", () => {
     const state = buildGameState();
     const action: Action = { type: "move", actorId: "hero-1", to: { x: 4, y: 1 } };
@@ -106,6 +126,59 @@ describe("rulesEngine.applyAction", () => {
     expect(result.state.turn.movementRemaining["monster-1"]).toBe(5);
   });
 
+  it("skips defeated actors when advancing turns", () => {
+    const board = { width: 5, height: 5, blocked: [] };
+    const actors = [
+      {
+        id: "hero-1",
+        name: "Barbarian",
+        faction: "hero" as const,
+        position: { x: 0, y: 0 },
+        movement: 4,
+        attackDice: 3,
+        defenseDice: 2,
+        health: 8,
+        maxHealth: 8,
+      },
+      {
+        id: "hero-2",
+        name: "Dwarf",
+        faction: "hero" as const,
+        position: { x: 1, y: 0 },
+        movement: 5,
+        attackDice: 3,
+        defenseDice: 3,
+        health: 0,
+        maxHealth: 6,
+      },
+      {
+        id: "monster-1",
+        name: "Goblin",
+        faction: "monster" as const,
+        position: { x: 2, y: 2 },
+        movement: 5,
+        attackDice: 2,
+        defenseDice: 2,
+        health: 3,
+        maxHealth: 3,
+      },
+    ];
+    const state = createGameState({ board, actors });
+
+    const { state: resultState, events } = applyAction(state, {
+      type: "endTurn",
+      actorId: "hero-1",
+    });
+
+    expect(events[0]).toEqual({
+      type: "turnEnded",
+      previousActorId: "hero-1",
+      nextActorId: "monster-1",
+    });
+    expect(currentActorId(resultState)).toBe("monster-1");
+    expect(resultState.turn.movementRemaining["monster-1"]).toBe(5);
+  });
+
   it("resolves an attack using provided dice rolls and emits an event", () => {
     const state = applyAction(buildGameState(), {
       type: "move",
@@ -132,6 +205,34 @@ describe("rulesEngine.applyAction", () => {
       damage: 1,
       targetHealth: 2,
       targetDefeated: false,
+    });
+  });
+
+  it("does not drop target health below zero and marks defeat", () => {
+    const state = applyAction(buildGameState(), {
+      type: "move",
+      actorId: "hero-1",
+      to: { x: 2, y: 1 },
+    }).state;
+
+    const { state: nextState, events } = applyAction(state, {
+      type: "attack",
+      attackerId: "hero-1",
+      targetId: "monster-1",
+      attackRoll: ["skull", "skull", "skull"],
+      defenseRoll: ["skull", "skull"],
+    });
+
+    expect(nextState.actors["monster-1"].health).toBe(0);
+    expect(events[0]).toEqual({
+      type: "attackResolved",
+      attackerId: "hero-1",
+      targetId: "monster-1",
+      attackRoll: ["skull", "skull", "skull"],
+      defenseRoll: ["skull", "skull"],
+      damage: 3,
+      targetHealth: 0,
+      targetDefeated: true,
     });
   });
 
