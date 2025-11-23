@@ -17,10 +17,12 @@ This plan summarizes the current progress and the next actionable steps to reach
 - Documented board/tile/card data formats so quests stay data-driven.
 - Hooked quest visibility triggers (doors, scripts) into the fog-of-war system via a dedicated rules action so door/script reveals emit consistent tile events and respect trigger history.
 - Extended spell/equipment effect handling with status duration ticking at end-of-turn so buffs/debuffs expire cleanly and revert their stat modifiers.
+- Added explicit door entities plus an `openDoor` action that enforces adjacency/locking rules, toggles passability, and automatically fires linked quest visibility triggers.
+- Expanded quest triggers so door/script contexts can spawn actors, drop treasure/furniture payloads, and enqueue deterministic dialog entries alongside reveal events.
 
 ## Next Up
-- Model explicit door entities + `openDoor` action that validates adjacency, toggles walkthrough state, and fires linked quest visibility triggers.
-- Expand the quest scripting surface so triggers can spawn actors, drop furniture/treasure, or enqueue dialog in response to engine events.
+- Introduce interact/use-object actions so spawned furniture and quest props can drive follow-up scripts without piggybacking on doors.
+- Add a lightweight quest objective tracker that listens to rule events (spawns, defeats, searches) and surfaces win/lose progress for future UI.
 
 ## Later (before Phase 2 is complete)
 - (tbd as Next Up items land)

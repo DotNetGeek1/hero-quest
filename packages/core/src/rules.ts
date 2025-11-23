@@ -10,6 +10,7 @@ import {
   GameEvent,
   GameState,
   MoveAction,
+  OpenDoorAction,
   SearchAction,
   SearchPerformedEvent,
   SearchType,
@@ -25,6 +26,7 @@ import {
 import {
   cloneGameState,
   currentActorId,
+  findDoor,
   findAreaContaining,
   areaAllowsSearch,
   hasOpposingFactionInArea,
@@ -520,6 +522,36 @@ function validateTriggerQuestVisibility(
   return { ok: true };
 }
 
+function validateOpenDoor(state: GameState, action: OpenDoorAction): ValidationResult {
+  const actor = state.actors[action.actorId];
+  if (!actor) {
+    return { ok: false, reason: "Actor not found" };
+  }
+  if (actor.health <= 0) {
+    return { ok: false, reason: "Actor is defeated" };
+  }
+  if (currentActorId(state) !== actor.id) {
+    return { ok: false, reason: "It is not this actor's turn" };
+  }
+
+  const door = findDoor(state.board, action.doorId);
+  if (!door) {
+    return { ok: false, reason: "Door not found" };
+  }
+  if (door.open) {
+    return { ok: false, reason: "Door is already open" };
+  }
+  if (door.locked) {
+    return { ok: false, reason: "Door is locked" };
+  }
+
+  if (manhattanDistance(actor.position, door.position) !== 1) {
+    return { ok: false, reason: "Door is not adjacent" };
+  }
+
+  return { ok: true };
+}
+
 export function validateAction(state: GameState, action: Action): ValidationResult {
   switch (action.type) {
     case "move":
@@ -534,6 +566,8 @@ export function validateAction(state: GameState, action: Action): ValidationResu
       return validateUseEquipment(state, action);
     case "triggerQuestVisibility":
       return validateTriggerQuestVisibility(state, action);
+    case "openDoor":
+      return validateOpenDoor(state, action);
     case "endTurn":
       if (!state.actors[action.actorId]) {
         return { ok: false, reason: "Actor not found" };
@@ -696,6 +730,34 @@ function applyTriggerQuestVisibility(state: GameState, action: TriggerQuestVisib
   return { state: result.state, events: result.events };
 }
 
+function applyOpenDoor(state: GameState, action: OpenDoorAction) {
+  let nextState = cloneGameState(state);
+  const door = findDoor(nextState.board, action.doorId);
+  if (!door) {
+    throw new Error("Door not found");
+  }
+
+  door.open = true;
+
+  const events: GameEvent[] = [
+    {
+      type: "doorOpened",
+      actorId: action.actorId,
+      doorId: door.id,
+      position: { ...door.position },
+    },
+  ];
+
+  const visibilityResult = triggerQuestVisibility(nextState, {
+    type: "door",
+    doorId: door.id,
+  });
+  nextState = visibilityResult.state;
+  events.push(...visibilityResult.events);
+
+  return { state: nextState, events };
+}
+
 export function applyAction(
   state: GameState,
   action: Action
@@ -705,18 +767,20 @@ export function applyAction(
     throw new Error(validation.reason);
   }
 
-  switch (action.type) {
-    case "move":
-      return applyMove(state, action);
-    case "search":
-      return applySearch(state, action);
-    case "castSpell":
-      return applyCastSpell(state, action);
-    case "useEquipment":
-      return applyUseEquipment(state, action);
-    case "triggerQuestVisibility":
-      return applyTriggerQuestVisibility(state, action);
-    case "attack": {
+    switch (action.type) {
+      case "move":
+        return applyMove(state, action);
+      case "search":
+        return applySearch(state, action);
+      case "castSpell":
+        return applyCastSpell(state, action);
+      case "useEquipment":
+        return applyUseEquipment(state, action);
+      case "triggerQuestVisibility":
+        return applyTriggerQuestVisibility(state, action);
+      case "openDoor":
+        return applyOpenDoor(state, action);
+      case "attack": {
       const nextState = cloneGameState(state);
       const attacker = nextState.actors[action.attackerId];
       const target = nextState.actors[action.targetId];

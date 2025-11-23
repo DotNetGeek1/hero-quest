@@ -4,7 +4,13 @@ import {
   BoardState,
   CardCatalog,
   DiscoverableState,
+  DoorState,
+  FurnitureState,
+  GameEvent,
   GameState,
+  QuestDialogEntry,
+  QuestState,
+  QuestTriggerEffect,
   QuestVisibilityTrigger,
   QuestVisibilityTriggerContext,
   SearchArea,
@@ -27,6 +33,8 @@ export type CreateGameStateParams = {
   searchConfig?: SearchRulesConfig;
   cards?: CardCatalog;
   visibility?: VisibilityState;
+  furniture?: FurnitureState[];
+  questDialog?: QuestDialogEntry[];
 };
 
 const DEFAULT_SEARCH_CONFIG: Required<SearchRulesConfig> = {
@@ -64,6 +72,8 @@ export function createGameState({
   searchConfig,
   cards,
   visibility,
+  furniture,
+  questDialog,
 }: CreateGameStateParams): GameState {
   const actorsById = actors.reduce<Record<string, ActorState>>((acc, actor) => {
     acc[actor.id] = actor;
@@ -82,6 +92,19 @@ export function createGameState({
     },
     {}
   );
+
+  const furnitureById = (furniture ?? []).reduce<Record<string, FurnitureState>>(
+    (acc, piece) => {
+      acc[piece.id] = piece;
+      return acc;
+    },
+    {}
+  );
+
+  const questState: QuestState = {
+    furniture: furnitureById,
+    dialogQueue: questDialog ? [...questDialog] : [],
+  };
 
   const normalizedSearchConfig = normalizeSearchConfig(searchConfig);
   const searchState: SearchState = {
@@ -124,6 +147,7 @@ export function createGameState({
         equipment: { ...EMPTY_CARD_CATALOG.equipment },
       },
     visibility: normalizedVisibility,
+    quest: questState,
   };
 }
 
@@ -141,6 +165,13 @@ export function isWithinBounds(board: BoardState, position: Vector2): boolean {
 }
 
 export function isBlocked(board: BoardState, position: Vector2): boolean {
+  if (
+    board.doors?.some(
+      (door) => !door.open && door.position.x === position.x && door.position.y === position.y
+    )
+  ) {
+    return true;
+  }
   return board.blocked.some((tile) => tile.x === position.x && tile.y === position.y);
 }
 
@@ -207,6 +238,10 @@ export function hasLineOfSight(
 
 export function tileKey(position: Vector2): string {
   return `${position.x},${position.y}`;
+}
+
+export function findDoor(board: BoardState, doorId: string): DoorState | undefined {
+  return board.doors?.find((door) => door.id === doorId);
 }
 
 export function findAreaContaining(board: BoardState, position: Vector2): SearchArea | undefined {
@@ -446,10 +481,98 @@ function applyTilesReveal(
   return { visibility: nextVisibility, newlyRevealed };
 }
 
+function cloneActorState(actor: ActorState): ActorState {
+  return JSON.parse(JSON.stringify(actor)) as ActorState;
+}
+
+function applyQuestTriggerEffects(
+  state: GameState,
+  effects?: QuestTriggerEffect[]
+): GameEvent[] {
+  if (!effects || effects.length === 0) {
+    return [];
+  }
+
+  const events: GameEvent[] = [];
+
+  effects.forEach((effect) => {
+    switch (effect.type) {
+      case "spawnActors": {
+        const spawned: string[] = [];
+        effect.actors.forEach((actor) => {
+          if (state.actors[actor.id]) {
+            return;
+          }
+          const stored = cloneActorState(actor);
+          state.actors[stored.id] = stored;
+          state.turn.order.push(stored.id);
+          state.turn.movementRemaining[stored.id] = stored.movement;
+          spawned.push(stored.id);
+        });
+        if (spawned.length > 0) {
+          events.push({
+            type: "actorsSpawned",
+            actorIds: spawned,
+          });
+        }
+        break;
+      }
+      case "addDiscoverables": {
+        const added: string[] = [];
+        effect.discoverables.forEach((discoverable) => {
+          if (state.discoverables[discoverable.id]) {
+            return;
+          }
+          state.discoverables[discoverable.id] = JSON.parse(
+            JSON.stringify(discoverable)
+          ) as DiscoverableState;
+          added.push(discoverable.id);
+        });
+        if (added.length > 0) {
+          events.push({
+            type: "discoverablesAdded",
+            discoverableIds: added,
+          });
+        }
+        break;
+      }
+      case "enqueueDialog": {
+        if (effect.entries.length > 0) {
+          const clonedEntries = effect.entries.map((entry) => ({ ...entry }));
+          state.quest.dialogQueue.push(...clonedEntries);
+          events.push({
+            type: "dialogEnqueued",
+            entries: clonedEntries,
+          });
+        }
+        break;
+      }
+      case "placeFurniture": {
+        const ids: string[] = [];
+        effect.furniture.forEach((item) => {
+          state.quest.furniture[item.id] = { ...item };
+          ids.push(item.id);
+        });
+        if (ids.length > 0) {
+          events.push({
+            type: "furniturePlaced",
+            furnitureIds: ids,
+          });
+        }
+        break;
+      }
+      default:
+        break;
+    }
+  });
+
+  return events;
+}
+
 export function triggerVisibilityReveal(
   state: GameState,
   trigger: VisibilityTrigger
-): { state: GameState; events: TilesRevealedEvent[] } {
+): { state: GameState; events: GameEvent[] } {
   const nextState = cloneGameState(state);
   if (nextState.visibility.triggerHistory[trigger.id]) {
     return { state: nextState, events: [] };
@@ -459,26 +582,27 @@ export function triggerVisibilityReveal(
   const tiles = dedupeTiles([...(trigger.tiles ?? []), ...areaTiles]);
   nextState.visibility = recordVisibilityTrigger(nextState.visibility, trigger.id);
 
-  if (tiles.length === 0) {
-    return { state: nextState, events: [] };
+  const ownerKeys = resolveVisibilityOwnerKeys(nextState, trigger.owner);
+  const events: GameEvent[] = [];
+
+  if (tiles.length > 0) {
+    ownerKeys.forEach((ownerKey) => {
+      const { visibility, newlyRevealed } = applyTilesReveal(nextState.visibility, ownerKey, tiles);
+      nextState.visibility = visibility;
+      if (newlyRevealed.length > 0) {
+        events.push({
+          type: "tilesRevealed",
+          ownerKey,
+          tiles: newlyRevealed,
+          source: trigger.source,
+          triggerId: trigger.id,
+        });
+      }
+    });
   }
 
-  const ownerKeys = resolveVisibilityOwnerKeys(nextState, trigger.owner);
-  const events: TilesRevealedEvent[] = [];
-
-  ownerKeys.forEach((ownerKey) => {
-    const { visibility, newlyRevealed } = applyTilesReveal(nextState.visibility, ownerKey, tiles);
-    nextState.visibility = visibility;
-    if (newlyRevealed.length > 0) {
-      events.push({
-        type: "tilesRevealed",
-        ownerKey,
-        tiles: newlyRevealed,
-        source: trigger.source,
-        triggerId: trigger.id,
-      });
-    }
-  });
+  const questEvents = applyQuestTriggerEffects(nextState, trigger.effects);
+  events.push(...questEvents);
 
   return { state: nextState, events };
 }
@@ -507,7 +631,7 @@ export function findQuestVisibilityTriggers(
 export function triggerQuestVisibility(
   state: GameState,
   context: QuestVisibilityTriggerContext
-): { state: GameState; events: TilesRevealedEvent[] } {
+): { state: GameState; events: GameEvent[] } {
   const matching = findQuestVisibilityTriggers(state.board, context);
 
   if (matching.length === 0) {
@@ -515,7 +639,7 @@ export function triggerQuestVisibility(
   }
 
   let workingState = state;
-  const events: TilesRevealedEvent[] = [];
+  const events: GameEvent[] = [];
 
   matching.forEach((trigger) => {
     const result = triggerVisibilityReveal(workingState, trigger);
