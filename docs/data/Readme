@@ -1,1 +1,95 @@
+# Data Formats
 
+This document captures the canonical shapes that feed the core rules engine. Keep
+files data-driven so quests, boards, and cards can be iterated without touching
+code.
+
+## Board Layouts
+
+Boards describe geometry plus searchable regions:
+
+```ts
+type BoardState = {
+  width: number;
+  height: number;
+  blocked: Vector2[]; // impassable tiles such as walls or closed doors
+  areas: {
+    id: string;
+    name: string;
+    kind: "room" | "corridor" | "exterior";
+    tiles: Vector2[]; // every tile that belongs to the region
+    allowedSearches?: Array<"traps" | "secret-doors" | "treasure">;
+  }[];
+};
+```
+
+- `blocked` tiles gate movement + line-of-sight.
+- `areas` power searching, fog of war reveals, and quest scripting triggers.
+- Use the same coordinate system across actors, discoverables, and tiles.
+
+## Discoverables & Searching
+
+Quests seed hidden content as discoverables. Each entry links to a board area and
+is revealed through `search` actions.
+
+```ts
+type DiscoverableState = {
+  id: string;
+  areaId: string; // must match a board area
+  type: "trap" | "secret-door" | "treasure";
+  position: Vector2;
+  revealed: boolean;
+  data?: Record<string, unknown>; // quest-specific payload
+};
+```
+
+`searchConfig` toggles validation rules:
+
+- `requireHeroesOnly` (default `true`) – monsters cannot search.
+- `requireNoEnemies` (default `true`) – actors must clear the area first.
+- `historyMode` – `"per-area"` (group limit) or `"per-hero"` (each hero can search once).
+
+`SearchPerformedEvent` emits `discoveries` every time new markers flip.
+
+## Cards, Spells, and Equipment
+
+Cards live under a quest/global catalog and are referenced by ID from actors.
+
+```ts
+type SpellDefinition = {
+  id: string;
+  name: string;
+  school: string;
+  target: {
+    type: "self" | "ally" | "enemy";
+    range: number;
+    requiresLineOfSight?: boolean;
+  };
+  effects: Array<{ type: "damage" | "heal"; amount: number }>;
+};
+
+type EquipmentDefinition = {
+  id: string;
+  name: string;
+  slot: "weapon" | "armor" | "trinket" | "consumable";
+  target: SpellDefinition["target"];
+  effects: SpellDefinition["effects"];
+  consumable?: boolean;
+};
+```
+
+- Actors carry spell IDs in `knownSpells` and item IDs in `equipment`.
+- `castSpell`/`useEquipment` actions rely entirely on the catalog; effects stay deterministic for tests.
+- Consumable gear automatically removes itself from the actor inventory after use.
+
+## Quest Bundles
+
+A quest bundles:
+
+1. **Board layout** – including areas and blocked tiles.
+2. **Actors** – initial hero/monster stats and inventories.
+3. **Discoverables/search config** – traps, hidden doors, treasure markers.
+4. **Card catalogs** – spells/equipment referenced by actors.
+
+Keep quest JSON focused on describing state; the rules engine handles validation,
+events, and deterministic application.
