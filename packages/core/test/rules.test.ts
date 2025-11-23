@@ -22,6 +22,7 @@ function buildGameState(options: SetupOptions = {}): GameState {
       position: { x: 0, y: 0 },
       movement: 4,
       attackDice: 3,
+      attackRange: 1,
       defenseDice: 2,
       health: 8,
       maxHealth: 8,
@@ -33,6 +34,7 @@ function buildGameState(options: SetupOptions = {}): GameState {
       position: { x: 2, y: 2 },
       movement: 5,
       attackDice: 2,
+      attackRange: 1,
       defenseDice: 2,
       health: 3,
       maxHealth: 3,
@@ -90,6 +92,65 @@ describe("rulesEngine.validateAction", () => {
       reason: "Another actor already occupies that tile",
     });
   });
+
+  it("validates ranged attacks with line of sight and range constraints", () => {
+    const boardDimensions = { width: 6, height: 3 };
+
+    const buildRangedState = (blocked: { x: number; y: number }[], monsterX: number) =>
+      createGameState({
+        board: { ...boardDimensions, blocked },
+        actors: [
+          {
+            id: "hero-archer",
+            name: "Elf",
+            faction: "hero" as const,
+            position: { x: 0, y: 0 },
+            movement: 6,
+            attackDice: 2,
+            attackRange: 4,
+            defenseDice: 2,
+            health: 5,
+            maxHealth: 5,
+          },
+          {
+            id: "monster-1",
+            name: "Goblin",
+            faction: "monster" as const,
+            position: { x: monsterX, y: 0 },
+            movement: 5,
+            attackDice: 2,
+            attackRange: 1,
+            defenseDice: 2,
+            health: 3,
+            maxHealth: 3,
+          },
+        ],
+        turnOrder: ["hero-archer", "monster-1"],
+      });
+
+    const action: Action = {
+      type: "attack",
+      attackerId: "hero-archer",
+      targetId: "monster-1",
+      attackRoll: ["skull", "skull"],
+      defenseRoll: ["white-shield", "black-shield"],
+    };
+
+    const blockedState = buildRangedState([{ x: 1, y: 0 }], 4);
+    expect(validateAction(blockedState, action)).toEqual({
+      ok: false,
+      reason: "Line of sight is blocked",
+    });
+
+    const openState = buildRangedState([], 4);
+    expect(validateAction(openState, action)).toEqual({ ok: true });
+
+    const outOfRangeState = buildRangedState([], 5);
+    expect(validateAction(outOfRangeState, action)).toEqual({
+      ok: false,
+      reason: "Target is beyond attack range",
+    });
+    });
 });
 
 describe("rulesEngine.applyAction", () => {
@@ -136,6 +197,7 @@ describe("rulesEngine.applyAction", () => {
         position: { x: 0, y: 0 },
         movement: 4,
         attackDice: 3,
+        attackRange: 1,
         defenseDice: 2,
         health: 8,
         maxHealth: 8,
@@ -147,6 +209,7 @@ describe("rulesEngine.applyAction", () => {
         position: { x: 1, y: 0 },
         movement: 5,
         attackDice: 3,
+        attackRange: 1,
         defenseDice: 3,
         health: 0,
         maxHealth: 6,
@@ -158,6 +221,7 @@ describe("rulesEngine.applyAction", () => {
         position: { x: 2, y: 2 },
         movement: 5,
         attackDice: 2,
+        attackRange: 1,
         defenseDice: 2,
         health: 3,
         maxHealth: 3,
@@ -177,6 +241,89 @@ describe("rulesEngine.applyAction", () => {
     });
     expect(currentActorId(resultState)).toBe("monster-1");
     expect(resultState.turn.movementRemaining["monster-1"]).toBe(5);
+  });
+
+  it("cycles through explicit mixed hero then monster turn order", () => {
+    const board = { width: 6, height: 6, blocked: [] };
+    const actors = [
+      {
+        id: "hero-1",
+        name: "Barbarian",
+        faction: "hero" as const,
+        position: { x: 0, y: 0 },
+        movement: 4,
+        attackDice: 3,
+        attackRange: 1,
+        defenseDice: 2,
+        health: 8,
+        maxHealth: 8,
+      },
+      {
+        id: "hero-2",
+        name: "Elf",
+        faction: "hero" as const,
+        position: { x: 1, y: 0 },
+        movement: 6,
+        attackDice: 2,
+        attackRange: 4,
+        defenseDice: 2,
+        health: 6,
+        maxHealth: 6,
+      },
+      {
+        id: "monster-1",
+        name: "Goblin",
+        faction: "monster" as const,
+        position: { x: 4, y: 4 },
+        movement: 5,
+        attackDice: 2,
+        attackRange: 1,
+        defenseDice: 2,
+        health: 3,
+        maxHealth: 3,
+      },
+      {
+        id: "monster-2",
+        name: "Orc",
+        faction: "monster" as const,
+        position: { x: 5, y: 5 },
+        movement: 6,
+        attackDice: 3,
+        attackRange: 1,
+        defenseDice: 2,
+        health: 4,
+        maxHealth: 4,
+      },
+    ];
+
+    let state = createGameState({
+      board,
+      actors,
+      turnOrder: ["hero-1", "hero-2", "monster-1", "monster-2"],
+    });
+
+    const expectations = [
+      { current: "hero-1", next: "hero-2" },
+      { current: "hero-2", next: "monster-1" },
+      { current: "monster-1", next: "monster-2" },
+      { current: "monster-2", next: "hero-1" },
+    ];
+
+    expectations.forEach(({ current, next }) => {
+      expect(currentActorId(state)).toBe(current);
+      const { state: updated, events } = applyAction(state, {
+        type: "endTurn",
+        actorId: current,
+      });
+      expect(events[0]).toEqual({
+        type: "turnEnded",
+        previousActorId: current,
+        nextActorId: next,
+      });
+      expect(currentActorId(updated)).toBe(next);
+      expect(updated.turn.movementRemaining[next]).toBe(updated.actors[next].movement);
+      state = updated;
+    });
   });
 
   it("resolves an attack using provided dice rolls and emits an event", () => {
@@ -202,7 +349,10 @@ describe("rulesEngine.applyAction", () => {
       targetId: "monster-1",
       attackRoll: ["skull", "skull", "skull"],
       defenseRoll: ["black-shield", "white-shield"],
-      damage: 1,
+        damage: 1,
+        attackSuccesses: 3,
+        defenseSuccesses: 2,
+        critical: true,
       targetHealth: 2,
       targetDefeated: false,
     });
@@ -230,7 +380,10 @@ describe("rulesEngine.applyAction", () => {
       targetId: "monster-1",
       attackRoll: ["skull", "skull", "skull"],
       defenseRoll: ["skull", "skull"],
-      damage: 3,
+        damage: 3,
+        attackSuccesses: 3,
+        defenseSuccesses: 0,
+        critical: true,
       targetHealth: 0,
       targetDefeated: true,
     });

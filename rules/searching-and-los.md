@@ -23,6 +23,7 @@ Implementation notes:
 - Use a grid-ray algorithm (e.g. Bresenham-based).
 - If any wall tile fully blocks the ray, LOS fails.
 - Edge cases (diagonal gaps) can be tuned per rule-set.
+- `packages/core` now exports `hasLineOfSight(board, from, to)` and reuses it inside attack validation so ranged and spell targeting share the same check.
 
 The rules engine exposes:
 

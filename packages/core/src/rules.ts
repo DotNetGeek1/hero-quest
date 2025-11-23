@@ -11,6 +11,7 @@ import {
 import {
   cloneGameState,
   currentActorId,
+  hasLineOfSight,
   isBlocked,
   isOccupied,
   isWithinBounds,
@@ -42,8 +43,23 @@ function validateAttack(state: GameState, action: AttackAction): ValidationResul
   }
 
   const distance = manhattanDistance(attacker.position, target.position);
-  if (distance !== 1) {
-    return { ok: false, reason: "Target is not adjacent" };
+  const range = attacker.attackRange ?? 1;
+
+  if (distance === 0) {
+    return { ok: false, reason: "Target is not valid" };
+  }
+
+  if (range <= 1) {
+    if (distance !== 1) {
+      return { ok: false, reason: "Target is not adjacent" };
+    }
+  } else {
+    if (distance > range) {
+      return { ok: false, reason: "Target is beyond attack range" };
+    }
+    if (distance > 1 && !hasLineOfSight(state.board, attacker.position, target.position)) {
+      return { ok: false, reason: "Line of sight is blocked" };
+    }
   }
 
   if (target.health <= 0) {
@@ -162,9 +178,9 @@ export function applyAction(
       const target = nextState.actors[action.targetId];
 
       const attackSkulls = countFaces(action.attackRoll, "skull");
-      const defenseShields =
-        countFaces(action.defenseRoll, "white-shield") +
-        countFaces(action.defenseRoll, "black-shield");
+        const defenseShields =
+          countFaces(action.defenseRoll, "white-shield") +
+          countFaces(action.defenseRoll, "black-shield");
 
       const damage = Math.max(0, attackSkulls - defenseShields);
       target.health = Math.max(0, target.health - damage);
@@ -176,6 +192,9 @@ export function applyAction(
         attackRoll: action.attackRoll,
         defenseRoll: action.defenseRoll,
         damage,
+          attackSuccesses: attackSkulls,
+          defenseSuccesses: defenseShields,
+          critical: damage > 0 && attackSkulls === attacker.attackDice,
         targetHealth: target.health,
         targetDefeated: target.health === 0,
       };
