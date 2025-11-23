@@ -12,6 +12,7 @@ export type ActorState = {
   position: Vector2;
   movement: number;
   attackDice: number;
+  attackRange: number;
   defenseDice: number;
   health: number;
   maxHealth: number;
@@ -82,6 +83,9 @@ export type AttackResolvedEvent = {
   attackRoll: DieFace[];
   defenseRoll: DieFace[];
   damage: number;
+  attackSuccesses: number;
+  defenseSuccesses: number;
+  critical: boolean;
   targetHealth: number;
   targetDefeated: boolean;
 };

@@ -71,3 +71,50 @@ export function currentActorId(state: GameState): string | undefined {
 export function manhattanDistance(a: Vector2, b: Vector2): number {
   return Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
 }
+
+export function hasLineOfSight(
+  board: BoardState,
+  from: Vector2,
+  to: Vector2
+): boolean {
+  if (!isWithinBounds(board, from) || !isWithinBounds(board, to)) {
+    return false;
+  }
+
+  if (from.x === to.x && from.y === to.y) {
+    return true;
+  }
+
+  let x0 = from.x;
+  let y0 = from.y;
+  const x1 = to.x;
+  const y1 = to.y;
+
+  const dx = Math.abs(x1 - x0);
+  const dy = Math.abs(y1 - y0);
+  const sx = x0 < x1 ? 1 : -1;
+  const sy = y0 < y1 ? 1 : -1;
+  let err = dx - dy;
+
+  while (!(x0 === x1 && y0 === y1)) {
+    const e2 = 2 * err;
+    if (e2 > -dy) {
+      err -= dy;
+      x0 += sx;
+    }
+    if (e2 < dx) {
+      err += dx;
+      y0 += sy;
+    }
+
+    if (x0 === x1 && y0 === y1) {
+      break;
+    }
+
+    if (isBlocked(board, { x: x0, y: y0 })) {
+      return false;
+    }
+  }
+
+  return true;
+}
