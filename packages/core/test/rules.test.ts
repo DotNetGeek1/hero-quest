@@ -4,6 +4,7 @@ import {
   createGameState,
   currentActorId,
   rulesEngine,
+  triggerQuestVisibility,
   triggerVisibilityReveal,
   validateAction,
 } from "../src";
@@ -791,6 +792,89 @@ describe("rulesEngine.applyAction", () => {
           { id: "battle-lust", name: "Battle Lust", duration: 2, modifiers: { defenseDice: 1 } },
         ]);
       });
+
+      it("supports status modifier and cleanse spell effects", () => {
+        const board = { width: 4, height: 4, blocked: [] };
+        const actors = [
+          {
+            id: "hero-1",
+            name: "Wizard",
+            faction: "hero" as const,
+            position: { x: 0, y: 0 },
+            movement: 5,
+            attackDice: 2,
+            attackRange: 3,
+            defenseDice: 2,
+            health: 5,
+            maxHealth: 5,
+            knownSpells: ["battle-trance", "purge-hex"],
+          },
+        ];
+
+        const cards = {
+          spells: {
+            "battle-trance": {
+              id: "battle-trance",
+              name: "Battle Trance",
+              school: "mind",
+              target: { type: "self", range: 0 },
+              effects: [
+                {
+                  type: "statusModifier" as const,
+                  stat: "attackDice" as const,
+                  amount: 2,
+                  duration: 3,
+                  id: "battle-trance-status",
+                  tags: ["buff", "offense"],
+                  name: "Battle Trance",
+                },
+              ],
+            },
+            "purge-hex": {
+              id: "purge-hex",
+              name: "Purge Hex",
+              school: "spirit",
+              target: { type: "self", range: 0 },
+              effects: [
+                {
+                  type: "cleanse" as const,
+                  tags: ["buff"],
+                },
+              ],
+            },
+          },
+          equipment: {},
+        };
+
+        const state = createGameState({ board, actors, cards });
+        const buffAction: Action = {
+          type: "castSpell",
+          casterId: "hero-1",
+          spellId: "battle-trance",
+        };
+
+        const { state: withBuff } = applyAction(state, buffAction);
+        expect(withBuff.actors["hero-1"].attackDice).toBe(4);
+        expect(withBuff.actors["hero-1"].statusEffects).toEqual([
+          {
+            id: "battle-trance-status",
+            name: "Battle Trance",
+            duration: 3,
+            modifiers: { attackDice: 2 },
+            tags: ["buff", "offense"],
+          },
+        ]);
+
+        const cleanseAction: Action = {
+          type: "castSpell",
+          casterId: "hero-1",
+          spellId: "purge-hex",
+        };
+
+        const { state: cleansed } = applyAction(withBuff, cleanseAction);
+        expect(cleansed.actors["hero-1"].attackDice).toBe(2);
+        expect(cleansed.actors["hero-1"].statusEffects).toEqual([]);
+      });
     });
 
     describe("visibility triggers", () => {
@@ -893,5 +977,63 @@ describe("rulesEngine.applyAction", () => {
       const ownerKeys = result.events.map((event) => event.ownerKey).sort();
       expect(ownerKeys).toEqual(["hero-1", "hero-2"]);
     });
+
+      it("fires board-defined door visibility triggers via quest helper", () => {
+        const boardWithTriggers = {
+          ...board,
+          visibilityTriggers: [
+            {
+              id: "door-1-trigger",
+              source: "door" as const,
+              doorId: "entrance",
+              owner: { type: "actor" as const, actorId: "hero-1" },
+              areaIds: ["room-1"],
+            },
+          ],
+        };
+
+        const state = createGameState({
+          board: boardWithTriggers,
+          actors: baseActors,
+          visibility: perActorVisibility,
+        });
+
+        const first = triggerQuestVisibility(state, { type: "door", doorId: "entrance" });
+        expect(first.events).toHaveLength(1);
+        expect(first.events[0]).toMatchObject({
+          type: "tilesRevealed",
+          ownerKey: "hero-1",
+          source: "door",
+        });
+
+        const second = triggerQuestVisibility(first.state, { type: "door", doorId: "entrance" });
+        expect(second.events).toHaveLength(0);
+      });
+
+      it("dispatches scripted quest visibility triggers for factions", () => {
+        const boardWithTriggers = {
+          ...board,
+          visibilityTriggers: [
+            {
+              id: "script-reveal",
+              source: "script" as const,
+              scriptId: "ambush",
+              owner: { type: "faction" as const, faction: "hero" as const },
+              areaIds: ["room-1"],
+            },
+          ],
+        };
+
+        const state = createGameState({
+          board: boardWithTriggers,
+          actors: baseActors,
+          visibility: perActorVisibility,
+        });
+
+        const result = triggerQuestVisibility(state, { type: "script", scriptId: "ambush" });
+        expect(result.events).toHaveLength(2);
+        const ownerKeys = result.events.map((event) => event.ownerKey).sort();
+        expect(ownerKeys).toEqual(["hero-1", "hero-2"]);
+      });
   });
 });
