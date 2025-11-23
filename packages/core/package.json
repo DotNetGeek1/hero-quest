@@ -1,0 +1,13 @@
+{
+  "name": "@hero-quest/core",
+  "version": "0.0.1",
+  "main": "src/index.ts",
+  "type": "commonjs",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0"
+  }
+}
