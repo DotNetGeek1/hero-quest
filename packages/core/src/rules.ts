@@ -11,6 +11,7 @@ import {
 import {
   cloneGameState,
   currentActorId,
+  hasLineOfSight,
   isBlocked,
   isOccupied,
   isWithinBounds,
@@ -37,13 +38,27 @@ function validateAttack(state: GameState, action: AttackAction): ValidationResul
     return { ok: false, reason: "Target not found" };
   }
 
+  if (attacker.id === target.id) {
+    return { ok: false, reason: "Cannot target self" };
+  }
+
   if (currentActorId(state) !== action.attackerId) {
     return { ok: false, reason: "It is not this actor's turn" };
   }
 
+  const maxRange = attacker.attackRange ?? 1;
   const distance = manhattanDistance(attacker.position, target.position);
-  if (distance !== 1) {
+  if (distance === 0) {
     return { ok: false, reason: "Target is not adjacent" };
+  }
+
+  if (distance > maxRange) {
+    return { ok: false, reason: "Target is out of range" };
+  }
+
+  const requiresLineOfSight = distance > 1;
+  if (requiresLineOfSight && !hasLineOfSight(state, attacker.position, target.position)) {
+    return { ok: false, reason: "No line of sight to target" };
   }
 
   if (target.health <= 0) {
@@ -169,15 +184,26 @@ export function applyAction(
       const damage = Math.max(0, attackSkulls - defenseShields);
       target.health = Math.max(0, target.health - damage);
 
+      const critical = attackSkulls === attacker.attackDice && attackSkulls > 0;
+      const netHits = damage;
+      const message = critical
+        ? `${attacker.name} lands a critical hit on ${target.name}!`
+        : `${attacker.name} hits ${target.name} for ${damage} damage.`;
+
       const attackEvent: AttackResolvedEvent = {
         type: "attackResolved",
         attackerId: attacker.id,
         targetId: target.id,
         attackRoll: action.attackRoll,
         defenseRoll: action.defenseRoll,
+        attackSkulls,
+        defenseShields,
+        netHits,
         damage,
         targetHealth: target.health,
         targetDefeated: target.health === 0,
+        critical,
+        message,
       };
 
       return { state: nextState, events: [attackEvent] };

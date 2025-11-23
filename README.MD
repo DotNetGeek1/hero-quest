@@ -19,5 +19,5 @@ This repository follows the monorepo structure described in `TECH_STACK.md` to s
 ## Current Progress
 
 - `packages/core` implements deterministic game state creation, validation, and application for movement and turn transitions.
-- Vitest coverage ensures actions respect bounds, blocking, occupancy, movement limits, and turn rotation.
-- Adjacent combat resolution now accepts explicit dice rolls, applies damage to targets, and emits structured combat events.
+- Vitest coverage ensures actions respect bounds, blocking, occupancy, movement limits, and turn rotation across mixed hero/monster turn orders.
+- Combat resolution tracks melee and ranged line-of-sight rules, enriches combat events with roll summaries and critical flags, and powers basic monster AI pathing/attacks.

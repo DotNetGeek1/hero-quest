@@ -64,6 +64,30 @@ export function isOccupied(state: GameState, position: Vector2): boolean {
   );
 }
 
+export function hasLineOfSight(state: GameState, from: Vector2, to: Vector2): boolean {
+  const deltaX = to.x - from.x;
+  const deltaY = to.y - from.y;
+  const steps = Math.max(Math.abs(deltaX), Math.abs(deltaY));
+
+  if (steps === 0) return true;
+
+  const stepX = deltaX / steps;
+  const stepY = deltaY / steps;
+
+  for (let i = 1; i < steps; i += 1) {
+    const sampleX = from.x + stepX * i;
+    const sampleY = from.y + stepY * i;
+
+    const cell = { x: Math.round(sampleX), y: Math.round(sampleY) };
+
+    if (!isWithinBounds(state.board, cell)) return false;
+    if (isBlocked(state.board, cell)) return false;
+    if (isOccupied(state, cell)) return false;
+  }
+
+  return true;
+}
+
 export function currentActorId(state: GameState): string | undefined {
   return state.turn.order[state.turn.currentIndex];
 }
