@@ -57,6 +57,14 @@ export type VisibilityTrigger = {
   tiles?: Vector2[];
 };
 
+export type QuestVisibilityTrigger =
+  | (VisibilityTrigger & { source: "door"; doorId: string })
+  | (VisibilityTrigger & { source: "script"; scriptId: string });
+
+export type QuestVisibilityTriggerContext =
+  | { type: "door"; doorId: string }
+  | { type: "script"; scriptId: string };
+
 export type DiscoverableType = "trap" | "secret-door" | "treasure";
 
 export type DiscoverableState = {
@@ -91,6 +99,7 @@ export type BoardState = {
   height: number;
   blocked: Vector2[];
   areas?: SearchArea[];
+  visibilityTriggers?: QuestVisibilityTrigger[];
 };
 
 export type TurnState = {
@@ -109,7 +118,22 @@ export type SpellEffect =
       ignoreCollisions?: boolean;
     }
   | { type: "buff"; stat: StatusModifierStat; amount: number }
-  | { type: "status"; effect: StatusEffectState };
+  | { type: "status"; effect: StatusEffectState }
+  | {
+      type: "statusModifier";
+      stat: StatusModifierStat;
+      amount: number;
+      duration: number;
+      id?: string;
+      name?: string;
+      tags?: string[];
+    }
+  | {
+      type: "cleanse";
+      statusIds?: string[];
+      tags?: string[];
+      removeAll?: boolean;
+    };
 
 export type StatusModifierStat = "attackDice" | "defenseDice" | "movement" | "maxHealth";
 
@@ -118,6 +142,7 @@ export type StatusEffectState = {
   name: string;
   duration: number;
   modifiers?: Partial<Record<StatusModifierStat, number>>;
+  tags?: string[];
 };
 
 export type TargetingProfile = {

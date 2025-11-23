@@ -14,8 +14,9 @@ import {
   SearchPerformedEvent,
   SearchType,
   SpellCastEvent,
-    SpellEffect,
-    StatusModifierStat,
+  SpellEffect,
+  StatusEffectState,
+  StatusModifierStat,
   TargetingProfile,
   UseEquipmentAction,
   ValidationResult,
@@ -166,10 +167,91 @@ function applyMoveEffect(state: GameState, target: ActorState, effect: Extract<S
   target.position = destination;
 }
 
-function applyStatusEffect(target: ActorState, effect: Extract<SpellEffect, { type: "status" }>["effect"]) {
+function removeStatusEffects(
+  target: ActorState,
+  predicate: (status: StatusEffectState) => boolean
+) {
+  if (!target.statusEffects || target.statusEffects.length === 0) {
+    return;
+  }
+
+  const remaining: StatusEffectState[] = [];
+  target.statusEffects.forEach((status) => {
+    if (predicate(status)) {
+      if (status.modifiers) {
+        Object.entries(status.modifiers).forEach(([stat, amount]) => {
+          if (typeof amount === "number") {
+            applyStatAdjustment(target, stat as StatusModifierStat, -amount);
+          }
+        });
+      }
+      return;
+    }
+    remaining.push(status);
+  });
+  target.statusEffects = remaining;
+}
+
+function applyStatusEffect(
+  target: ActorState,
+  effect: Extract<SpellEffect, { type: "status" }>["effect"]
+) {
   target.statusEffects = target.statusEffects ?? [];
-  target.statusEffects = target.statusEffects.filter((existing) => existing.id !== effect.id);
-  target.statusEffects.push({ ...effect });
+  removeStatusEffects(target, (existing) => existing.id === effect.id);
+
+  const stored: StatusEffectState = {
+    ...effect,
+    modifiers: effect.modifiers ? { ...effect.modifiers } : undefined,
+    tags: effect.tags ? [...effect.tags] : undefined,
+  };
+
+  target.statusEffects.push(stored);
+
+  if (effect.modifiers) {
+    Object.entries(effect.modifiers).forEach(([stat, amount]) => {
+      if (typeof amount === "number") {
+        applyStatAdjustment(target, stat as StatusModifierStat, amount);
+      }
+    });
+  }
+}
+
+function applyStatusModifierEffect(
+  target: ActorState,
+  effect: Extract<SpellEffect, { type: "statusModifier" }>
+) {
+  const status: StatusEffectState = {
+    id: effect.id ?? `modifier:${effect.stat}`,
+    name:
+      effect.name ??
+      (effect.amount >= 0 ? `Boost ${effect.stat}` : `Weaken ${effect.stat}`),
+    duration: effect.duration,
+    modifiers: { [effect.stat]: effect.amount },
+    tags: effect.tags ? [...effect.tags] : undefined,
+  };
+  applyStatusEffect(target, status);
+}
+
+function applyCleanseEffect(
+  target: ActorState,
+  effect: Extract<SpellEffect, { type: "cleanse" }>
+) {
+  const statusIds = effect.statusIds ? new Set(effect.statusIds) : undefined;
+  const tagFilters = effect.tags ? new Set(effect.tags) : undefined;
+  const removeAll = effect.removeAll || (!statusIds && !tagFilters);
+
+  removeStatusEffects(target, (status) => {
+    if (removeAll) {
+      return true;
+    }
+    if (statusIds && statusIds.has(status.id)) {
+      return true;
+    }
+    if (tagFilters && status.tags) {
+      return status.tags.some((tag) => tagFilters.has(tag));
+    }
+    return false;
+  });
 }
 
 function applyEffectsToActor(state: GameState, target: ActorState, effects: SpellEffect[]) {
@@ -189,13 +271,12 @@ function applyEffectsToActor(state: GameState, target: ActorState, effects: Spel
         break;
       case "status":
         applyStatusEffect(target, effect.effect);
-        if (effect.effect.modifiers) {
-          Object.entries(effect.effect.modifiers).forEach(([stat, amount]) => {
-            if (typeof amount === "number") {
-              applyStatAdjustment(target, stat as StatusModifierStat, amount);
-            }
-          });
-        }
+        break;
+      case "statusModifier":
+        applyStatusModifierEffect(target, effect);
+        break;
+      case "cleanse":
+        applyCleanseEffect(target, effect);
         break;
       default:
         break;
