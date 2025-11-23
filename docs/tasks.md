@@ -5,13 +5,14 @@ This plan summarizes the current progress and the next actionable steps to reach
 ## Done
 - Core turn + movement validation with deterministic events.
 - Adjacent attack resolution using supplied dice rolls, damage application, and defeat detection events.
+- Defense/morale gating prevents defeated actors from acting and ensures defeated actors are skipped when advancing turns.
+- Added tests covering defeat-driven turn skipping and zero-floor damage outcomes.
 
 ## Next Up
 - Define ranged/line-of-sight checks and integrate them into attack validation.
-- Add defense/morale gates: disallow actions from defeated actors and ensure health cannot drop below zero.
 - Emit richer combat log details (per-die results, critical messaging) for UI consumption.
 - Introduce basic monster AI routine (move toward nearest hero, attack if adjacent).
-- Expand test fixtures to cover mixed-faction turn order (heroes then monsters) and defeat-driven turn skipping.
+- Expand test fixtures to cover mixed-faction turn order (heroes then monsters) beyond the base hero/monster pairing.
 
 ## Later (before Phase 2 is complete)
 - Model searching (traps, secret doors, treasure) with validation rules.

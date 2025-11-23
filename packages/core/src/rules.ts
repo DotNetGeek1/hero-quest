@@ -29,6 +29,10 @@ function validateAttack(state: GameState, action: AttackAction): ValidationResul
     return { ok: false, reason: "Attacker not found" };
   }
 
+  if (attacker.health <= 0) {
+    return { ok: false, reason: "Attacker is defeated" };
+  }
+
   if (!target) {
     return { ok: false, reason: "Target not found" };
   }
@@ -61,6 +65,10 @@ function validateMove(state: GameState, action: MoveAction): ValidationResult {
   const actor = state.actors[action.actorId];
   if (!actor) {
     return { ok: false, reason: "Actor not found" };
+  }
+
+  if (actor.health <= 0) {
+    return { ok: false, reason: "Actor is defeated" };
   }
 
   if (currentActorId(state) !== action.actorId) {
@@ -101,6 +109,9 @@ export function validateAction(state: GameState, action: Action): ValidationResu
     case "endTurn":
       if (!state.actors[action.actorId]) {
         return { ok: false, reason: "Actor not found" };
+      }
+      if (state.actors[action.actorId].health <= 0) {
+        return { ok: false, reason: "Actor is defeated" };
       }
       if (currentActorId(state) !== action.actorId) {
         return { ok: false, reason: "It is not this actor's turn" };
@@ -174,8 +185,20 @@ export function applyAction(
     case "endTurn": {
       const nextState = cloneGameState(state);
       const previousActorId = currentActorId(nextState) as string;
-      nextState.turn.currentIndex =
-        (nextState.turn.currentIndex + 1) % nextState.turn.order.length;
+      const orderLength = nextState.turn.order.length;
+
+      for (let step = 1; step <= orderLength; step += 1) {
+        const candidateIndex =
+          (nextState.turn.currentIndex + step) % nextState.turn.order.length;
+        const candidateId = nextState.turn.order[candidateIndex];
+        const candidate = nextState.actors[candidateId];
+
+        if (candidate && candidate.health > 0) {
+          nextState.turn.currentIndex = candidateIndex;
+          break;
+        }
+      }
+
       const newActorId = currentActorId(nextState) as string;
       const newActor = nextState.actors[newActorId];
       nextState.turn.movementRemaining[newActorId] = newActor.movement;
