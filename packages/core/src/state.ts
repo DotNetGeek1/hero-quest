@@ -121,7 +121,7 @@ export function createGameState({
         spells: { ...EMPTY_CARD_CATALOG.spells },
         equipment: { ...EMPTY_CARD_CATALOG.equipment },
       },
-      visibility: normalizedVisibility,
+    visibility: normalizedVisibility,
   };
 }
 
