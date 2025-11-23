@@ -9,6 +9,12 @@ import {
   GameEvent,
   GameState,
   QuestDialogEntry,
+  QuestObjectiveDefinition,
+  QuestObjectiveProgress,
+  QuestObjectiveStatusSnapshot,
+  QuestObjectivesOverallStatus,
+  QuestObjectivesState,
+  QuestObjectivesUpdatedEvent,
   QuestState,
   QuestTriggerEffect,
   QuestVisibilityTrigger,
@@ -35,6 +41,7 @@ export type CreateGameStateParams = {
   visibility?: VisibilityState;
   furniture?: FurnitureState[];
   questDialog?: QuestDialogEntry[];
+  questObjectives?: QuestObjectiveDefinition[];
 };
 
 const DEFAULT_SEARCH_CONFIG: Required<SearchRulesConfig> = {
@@ -55,6 +62,75 @@ const EMPTY_CARD_CATALOG: CardCatalog = {
   equipment: {},
 };
 
+function normalizeObjectiveDefinition(
+  definition: QuestObjectiveDefinition
+): QuestObjectiveDefinition {
+  return {
+    ...definition,
+    category: definition.category ?? "primary",
+    contributesTo: definition.contributesTo ?? "none",
+  };
+}
+
+function resolveObjectiveTarget(definition: QuestObjectiveDefinition): number {
+  const { condition } = definition;
+  if (typeof condition.count === "number" && condition.count > 0) {
+    return condition.count;
+  }
+
+  if (condition.type === "search" && condition.areaIds && condition.areaIds.length > 0) {
+    return condition.areaIds.length;
+  }
+
+  if (
+    (condition.type === "defeat" || condition.type === "spawn") &&
+    condition.actorIds &&
+    condition.actorIds.length > 0
+  ) {
+    return condition.actorIds.length;
+  }
+
+  return 1;
+}
+
+function initializeQuestObjectives(
+  definitions?: QuestObjectiveDefinition[]
+): QuestObjectivesState {
+  if (!definitions || definitions.length === 0) {
+    return {
+      definitions: {},
+      order: [],
+      progress: {},
+      tracking: {},
+      overallStatus: "in-progress",
+    };
+  }
+
+  const normalized = definitions.map(normalizeObjectiveDefinition);
+  const stored: Record<string, QuestObjectiveDefinition> = {};
+  const progress: Record<string, QuestObjectiveProgress> = {};
+  const tracking: Record<string, Record<string, boolean>> = {};
+
+  normalized.forEach((definition) => {
+    stored[definition.id] = definition;
+    progress[definition.id] = {
+      id: definition.id,
+      current: 0,
+      target: resolveObjectiveTarget(definition),
+      status: "pending",
+    };
+    tracking[definition.id] = {};
+  });
+
+  return {
+    definitions: stored,
+    order: normalized.map((definition) => definition.id),
+    progress,
+    tracking,
+    overallStatus: "in-progress",
+  };
+}
+
 function normalizeSearchConfig(config?: SearchRulesConfig): Required<SearchRulesConfig> {
   return {
     requireHeroesOnly:
@@ -74,6 +150,7 @@ export function createGameState({
   visibility,
   furniture,
   questDialog,
+  questObjectives,
 }: CreateGameStateParams): GameState {
   const actorsById = actors.reduce<Record<string, ActorState>>((acc, actor) => {
     acc[actor.id] = actor;
@@ -104,6 +181,8 @@ export function createGameState({
   const questState: QuestState = {
     furniture: furnitureById,
     dialogQueue: questDialog ? [...questDialog] : [],
+    interactionHistory: {},
+    objectives: initializeQuestObjectives(questObjectives),
   };
 
   const normalizedSearchConfig = normalizeSearchConfig(searchConfig);
@@ -567,6 +646,180 @@ function applyQuestTriggerEffects(
   });
 
   return events;
+}
+
+function recalcObjectivesStatus(state: QuestObjectivesState): QuestObjectivesOverallStatus {
+  if (state.overallStatus === "defeat") {
+    return "defeat";
+  }
+
+  const defeatMet = state.order.some((id) => {
+    const definition = state.definitions[id];
+    if (definition.contributesTo !== "defeat") {
+      return false;
+    }
+    const progress = state.progress[id];
+    return progress.status === "failed";
+  });
+
+  if (defeatMet) {
+    return "defeat";
+  }
+
+  const victoryObjectives = state.order.filter(
+    (id) => state.definitions[id].contributesTo === "victory"
+  );
+  if (
+    victoryObjectives.length > 0 &&
+    victoryObjectives.every((id) => state.progress[id].status === "completed")
+  ) {
+    return "victory";
+  }
+
+  return "in-progress";
+}
+
+function buildObjectiveSnapshot(
+  state: QuestObjectivesState
+): QuestObjectiveStatusSnapshot[] {
+  return state.order.map((id) => {
+    const definition = state.definitions[id];
+    const progress = state.progress[id];
+    return {
+      id,
+      description: definition.description,
+      category: definition.category ?? "primary",
+      contributesTo: definition.contributesTo ?? "none",
+      current: progress.current,
+      target: progress.target,
+      status: progress.status,
+    };
+  });
+}
+
+export function updateQuestObjectivesFromEvents(
+  state: GameState,
+  events: GameEvent[]
+): QuestObjectivesUpdatedEvent | undefined {
+  if (!events || events.length === 0) {
+    return undefined;
+  }
+
+  const objectives = state.quest.objectives;
+  if (!objectives || objectives.order.length === 0) {
+    return undefined;
+  }
+
+  let changed = false;
+
+  const applyIncrement = (definition: QuestObjectiveDefinition, key?: string) => {
+    const progress = objectives.progress[definition.id];
+    if (!progress || progress.status !== "pending") {
+      return;
+    }
+
+    if (key) {
+      const tracking = objectives.tracking[definition.id] ?? {};
+      if (tracking[key]) {
+        return;
+      }
+      tracking[key] = true;
+      objectives.tracking[definition.id] = tracking;
+    }
+
+    const nextValue = Math.min(progress.target, progress.current + 1);
+    if (nextValue !== progress.current) {
+      progress.current = nextValue;
+      changed = true;
+    }
+
+    if (progress.current >= progress.target) {
+      const finalStatus =
+        definition.contributesTo === "defeat" ? "failed" : "completed";
+      if (progress.status !== finalStatus) {
+        progress.status = finalStatus;
+        changed = true;
+      }
+    }
+  };
+
+  events.forEach((event) => {
+    switch (event.type) {
+      case "actorsSpawned": {
+        event.actorIds.forEach((actorId) => {
+          const actor = state.actors[actorId];
+          objectives.order.forEach((id) => {
+            const definition = objectives.definitions[id];
+            if (definition.condition.type !== "spawn") {
+              return;
+            }
+            const { actorIds, faction } = definition.condition;
+            if (actorIds && actorIds.length > 0 && !actorIds.includes(actorId)) {
+              return;
+            }
+            if (faction && (!actor || actor.faction !== faction)) {
+              return;
+            }
+            applyIncrement(definition, actorId);
+          });
+        });
+        break;
+      }
+      case "actorDefeated": {
+        objectives.order.forEach((id) => {
+          const definition = objectives.definitions[id];
+          if (definition.condition.type !== "defeat") {
+            return;
+          }
+          const { actorIds, faction } = definition.condition;
+          if (actorIds && actorIds.length > 0 && !actorIds.includes(event.actorId)) {
+            return;
+          }
+          if (faction && faction !== event.faction) {
+            return;
+          }
+          applyIncrement(definition, event.actorId);
+        });
+        break;
+      }
+      case "searchPerformed": {
+        objectives.order.forEach((id) => {
+          const definition = objectives.definitions[id];
+          if (definition.condition.type !== "search") {
+            return;
+          }
+          const { areaIds, searchType } = definition.condition;
+          if (searchType && searchType !== event.searchType) {
+            return;
+          }
+          if (areaIds && areaIds.length > 0 && !areaIds.includes(event.areaId)) {
+            return;
+          }
+          const trackingKey = areaIds && areaIds.length > 0 ? event.areaId : undefined;
+          applyIncrement(definition, trackingKey);
+        });
+        break;
+      }
+      default:
+        break;
+    }
+  });
+
+  const overallStatus = recalcObjectivesStatus(objectives);
+  if (overallStatus !== objectives.overallStatus) {
+    objectives.overallStatus = overallStatus;
+    changed = true;
+  }
+
+  if (!changed) {
+    return undefined;
+  }
+
+  return {
+    type: "questObjectivesUpdated",
+    status: objectives.overallStatus,
+    objectives: buildObjectiveSnapshot(objectives),
+  };
 }
 
 export function triggerVisibilityReveal(

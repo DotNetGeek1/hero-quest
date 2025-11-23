@@ -84,12 +84,22 @@ export type DoorState = {
   locked?: boolean;
 };
 
+export type FurnitureInteractionBinding = {
+  scriptId: string;
+  requiresAdjacency?: boolean;
+  once?: boolean;
+  allowedFactions?: ActorFaction[];
+};
+
+export type InteractionTargetType = "furniture";
+
 export type FurnitureState = {
   id: string;
   name: string;
   position: Vector2;
   blocking?: boolean;
   data?: Record<string, unknown>;
+  interaction?: FurnitureInteractionBinding;
 };
 
 export type QuestDialogEntry = {
@@ -98,9 +108,62 @@ export type QuestDialogEntry = {
   text: string;
 };
 
+export type QuestObjectiveCategory = "primary" | "secondary";
+
+export type QuestObjectiveContribution = "victory" | "defeat" | "none";
+
+export type QuestObjectiveCondition =
+  | {
+      type: "spawn";
+      actorIds?: string[];
+      faction?: ActorFaction;
+      count?: number;
+    }
+  | {
+      type: "defeat";
+      actorIds?: string[];
+      faction?: ActorFaction;
+      count?: number;
+    }
+  | {
+      type: "search";
+      areaIds?: string[];
+      searchType?: SearchType;
+      count?: number;
+    };
+
+export type QuestObjectiveDefinition = {
+  id: string;
+  description: string;
+  condition: QuestObjectiveCondition;
+  category?: QuestObjectiveCategory;
+  contributesTo?: QuestObjectiveContribution;
+};
+
+export type QuestObjectiveProgressStatus = "pending" | "completed" | "failed";
+
+export type QuestObjectiveProgress = {
+  id: string;
+  current: number;
+  target: number;
+  status: QuestObjectiveProgressStatus;
+};
+
+export type QuestObjectivesOverallStatus = "in-progress" | "victory" | "defeat";
+
+export type QuestObjectivesState = {
+  definitions: Record<string, QuestObjectiveDefinition>;
+  order: string[];
+  progress: Record<string, QuestObjectiveProgress>;
+  tracking: Record<string, Record<string, boolean>>;
+  overallStatus: QuestObjectivesOverallStatus;
+};
+
 export type QuestState = {
   furniture: Record<string, FurnitureState>;
   dialogQueue: QuestDialogEntry[];
+  interactionHistory: Record<string, boolean>;
+  objectives: QuestObjectivesState;
 };
 
 export type SearchHistoryMode = "per-area" | "per-hero";
@@ -279,6 +342,13 @@ export type TriggerQuestVisibilityAction = {
   context: QuestVisibilityTriggerContext;
 };
 
+export type InteractAction = {
+  type: "interact";
+  actorId: string;
+  targetType: InteractionTargetType;
+  targetId: string;
+};
+
 export type OpenDoorAction = {
   type: "openDoor";
   actorId: string;
@@ -293,6 +363,7 @@ export type Action =
   | CastSpellAction
   | UseEquipmentAction
   | TriggerQuestVisibilityAction
+  | InteractAction
   | OpenDoorAction;
 
 export type ValidationResult =
@@ -392,6 +463,36 @@ export type EquipmentUsedEvent = {
   consumed: boolean;
 };
 
+export type InteractionPerformedEvent = {
+  type: "interactionPerformed";
+  actorId: string;
+  targetType: InteractionTargetType;
+  targetId: string;
+  scriptId?: string;
+};
+
+export type ActorDefeatedEvent = {
+  type: "actorDefeated";
+  actorId: string;
+  faction: ActorFaction;
+};
+
+export type QuestObjectiveStatusSnapshot = {
+  id: string;
+  description: string;
+  category: QuestObjectiveCategory;
+  contributesTo: QuestObjectiveContribution;
+  current: number;
+  target: number;
+  status: QuestObjectiveProgressStatus;
+};
+
+export type QuestObjectivesUpdatedEvent = {
+  type: "questObjectivesUpdated";
+  status: QuestObjectivesOverallStatus;
+  objectives: QuestObjectiveStatusSnapshot[];
+};
+
 export type GameEvent =
   | MoveEvent
   | TurnEndedEvent
@@ -404,7 +505,10 @@ export type GameEvent =
   | FurniturePlacedEvent
   | DialogEnqueuedEvent
   | SpellCastEvent
-  | EquipmentUsedEvent;
+  | EquipmentUsedEvent
+  | InteractionPerformedEvent
+  | ActorDefeatedEvent
+  | QuestObjectivesUpdatedEvent;
 
 export interface RulesEngine {
   validateAction(state: GameState, action: Action): ValidationResult;

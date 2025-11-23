@@ -8,7 +8,7 @@ import {
   triggerVisibilityReveal,
   validateAction,
 } from "../src";
-import { Action, GameState } from "../src/types";
+import { Action, ActorFaction, GameState, QuestObjectiveDefinition } from "../src/types";
 
 type SetupOptions = {
   blocked?: { x: number; y: number }[];
@@ -1509,6 +1509,327 @@ describe("rulesEngine.applyAction", () => {
 
       const second = applyAction(first.state, action);
       expect(second.events).toHaveLength(0);
+    });
+  });
+
+  describe("interact actions", () => {
+    it("allows heroes to trigger quest scripts via furniture interactions", () => {
+      const board = {
+        width: 3,
+        height: 3,
+        blocked: [],
+        visibilityTriggers: [
+          {
+            id: "lever-script-trigger",
+            source: "script" as const,
+            scriptId: "lever-script",
+            effects: [
+              {
+                type: "spawnActors" as const,
+                actors: [
+                  {
+                    id: "ambush-goblin",
+                    name: "Goblin",
+                    faction: "monster" as const,
+                    position: { x: 2, y: 2 },
+                    movement: 5,
+                    attackDice: 2,
+                    attackRange: 1,
+                    defenseDice: 2,
+                    health: 2,
+                    maxHealth: 2,
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      const hero = {
+        id: "hero-1",
+        name: "Barbarian",
+        faction: "hero" as const,
+        position: { x: 0, y: 0 },
+        movement: 4,
+        attackDice: 3,
+        attackRange: 1,
+        defenseDice: 2,
+        health: 8,
+        maxHealth: 8,
+      };
+
+      const furniture = [
+        {
+          id: "lever-1",
+          name: "Ancient Lever",
+          position: { x: 1, y: 0 },
+          interaction: { scriptId: "lever-script", once: true },
+        },
+      ];
+
+      const state = createGameState({
+        board,
+        actors: [hero],
+        furniture,
+        turnOrder: ["hero-1"],
+      });
+
+      const action: Action = {
+        type: "interact",
+        actorId: "hero-1",
+        targetType: "furniture",
+        targetId: "lever-1",
+      };
+
+      expect(validateAction(state, action)).toEqual({ ok: true });
+
+      const { state: afterInteract, events } = applyAction(state, action);
+      expect(events[0]).toMatchObject({
+        type: "interactionPerformed",
+        actorId: "hero-1",
+        targetId: "lever-1",
+        scriptId: "lever-script",
+      });
+      expect(events.some((event) => event.type === "actorsSpawned")).toBe(true);
+      expect(afterInteract.actors["ambush-goblin"]).toBeDefined();
+      expect(afterInteract.quest.interactionHistory["lever-1"]).toBe(true);
+
+      expect(validateAction(afterInteract, action)).toEqual({
+        ok: false,
+        reason: "This object has already been used",
+      });
+    });
+
+    it("blocks factions that are not allowed to use the object", () => {
+      const board = { width: 3, height: 3, blocked: [] };
+      const actors = [
+        {
+          id: "hero-1",
+          name: "Barbarian",
+          faction: "hero" as const,
+          position: { x: 0, y: 0 },
+          movement: 4,
+          attackDice: 3,
+          attackRange: 1,
+          defenseDice: 2,
+          health: 8,
+          maxHealth: 8,
+        },
+        {
+          id: "monster-1",
+          name: "Goblin",
+          faction: "monster" as const,
+          position: { x: 1, y: 0 },
+          movement: 5,
+          attackDice: 2,
+          attackRange: 1,
+          defenseDice: 2,
+          health: 3,
+          maxHealth: 3,
+        },
+      ];
+
+      const furniture = [
+        {
+          id: "altar-1",
+          name: "Sacred Altar",
+          position: { x: 0, y: 1 },
+          interaction: {
+            scriptId: "blessing",
+            allowedFactions: ["hero"] as ActorFaction[],
+          },
+        },
+      ];
+
+      const state = createGameState({
+        board,
+        actors,
+        furniture,
+        turnOrder: ["monster-1", "hero-1"],
+      });
+
+      const monsterAction: Action = {
+        type: "interact",
+        actorId: "monster-1",
+        targetType: "furniture",
+        targetId: "altar-1",
+      };
+
+      expect(validateAction(state, monsterAction)).toEqual({
+        ok: false,
+        reason: "Actor cannot interact with this object",
+      });
+    });
+  });
+
+  describe("quest objective tracking", () => {
+    it("updates defeat objectives and emits victory status", () => {
+      const board = { width: 3, height: 3, blocked: [] };
+      const actors = [
+        {
+          id: "hero-1",
+          name: "Barbarian",
+          faction: "hero" as const,
+          position: { x: 0, y: 0 },
+          movement: 4,
+          attackDice: 3,
+          attackRange: 1,
+          defenseDice: 2,
+          health: 8,
+          maxHealth: 8,
+        },
+        {
+          id: "monster-1",
+          name: "Goblin",
+          faction: "monster" as const,
+          position: { x: 1, y: 0 },
+          movement: 5,
+          attackDice: 2,
+          attackRange: 1,
+          defenseDice: 2,
+          health: 2,
+          maxHealth: 2,
+        },
+        {
+          id: "monster-2",
+          name: "Orc",
+          faction: "monster" as const,
+          position: { x: 0, y: 1 },
+          movement: 5,
+          attackDice: 3,
+          attackRange: 1,
+          defenseDice: 2,
+          health: 3,
+          maxHealth: 3,
+        },
+      ];
+
+      const questObjectives: QuestObjectiveDefinition[] = [
+        {
+          id: "defeat-minions",
+          description: "Defeat both monsters",
+          condition: { type: "defeat", actorIds: ["monster-1", "monster-2"] },
+          contributesTo: "victory",
+        },
+      ];
+
+      let state = createGameState({
+        board,
+        actors,
+        questObjectives,
+        turnOrder: ["hero-1", "monster-1", "monster-2"],
+      });
+
+      const killerAttack = {
+        type: "attack" as const,
+        attackerId: "hero-1",
+        targetId: "monster-1",
+        attackRoll: ["skull", "skull", "skull"],
+        defenseRoll: ["skull", "skull"],
+      };
+
+      const firstResult = applyAction(state, killerAttack);
+      const firstUpdate = firstResult.events.find(
+        (event) => event.type === "questObjectivesUpdated"
+      ) as any;
+      expect(firstUpdate.status).toBe("in-progress");
+      expect(firstUpdate.objectives[0]).toMatchObject({
+        id: "defeat-minions",
+        current: 1,
+        target: 2,
+        status: "pending",
+      });
+
+      state = firstResult.state;
+      const secondResult = applyAction(state, {
+        ...killerAttack,
+        targetId: "monster-2",
+        defenseRoll: ["skull", "skull"],
+      });
+
+      const victoryUpdate = secondResult.events.find(
+        (event) => event.type === "questObjectivesUpdated"
+      ) as any;
+      expect(victoryUpdate.status).toBe("victory");
+      expect(victoryUpdate.objectives[0]).toMatchObject({
+        id: "defeat-minions",
+        current: 2,
+        status: "completed",
+      });
+      expect(secondResult.state.quest.objectives.overallStatus).toBe("victory");
+    });
+
+    it("completes search objectives when matching areas are investigated", () => {
+      const board = {
+        width: 3,
+        height: 3,
+        blocked: [],
+        areas: [
+          {
+            id: "room-1",
+            name: "Entry",
+            kind: "room" as const,
+            tiles: [
+              { x: 0, y: 0 },
+              { x: 1, y: 0 },
+            ],
+          },
+        ],
+      };
+
+      const actors = [
+        {
+          id: "hero-1",
+          name: "Barbarian",
+          faction: "hero" as const,
+          position: { x: 0, y: 0 },
+          movement: 4,
+          attackDice: 3,
+          attackRange: 1,
+          defenseDice: 2,
+          health: 8,
+          maxHealth: 8,
+        },
+      ];
+
+      const questObjectives: QuestObjectiveDefinition[] = [
+        {
+          id: "search-entry",
+          description: "Search the entry hall for treasure",
+          condition: { type: "search", areaIds: ["room-1"], searchType: "treasure" },
+          contributesTo: "victory",
+        },
+      ];
+
+      const state = createGameState({
+        board,
+        actors,
+        questObjectives,
+        turnOrder: ["hero-1"],
+      });
+
+      const searchAction: Action = {
+        type: "search",
+        actorId: "hero-1",
+        searchType: "treasure",
+      };
+
+      const { events, state: afterSearch } = applyAction(state, searchAction);
+      const objectiveEvent = events.find(
+        (event) => event.type === "questObjectivesUpdated"
+      ) as any;
+      expect(objectiveEvent.status).toBe("victory");
+      expect(objectiveEvent.objectives[0]).toMatchObject({
+        id: "search-entry",
+        current: 1,
+        status: "completed",
+      });
+      expect(afterSearch.quest.objectives.progress["search-entry"]).toMatchObject({
+        current: 1,
+        target: 1,
+        status: "completed",
+      });
     });
   });
 });

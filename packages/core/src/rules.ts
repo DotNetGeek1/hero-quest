@@ -20,6 +20,7 @@ import {
   StatusModifierStat,
   TargetingProfile,
   TriggerQuestVisibilityAction,
+  InteractAction,
   UseEquipmentAction,
   ValidationResult,
 } from "./types";
@@ -42,6 +43,7 @@ import {
   tileKey,
   triggerQuestVisibility,
   findQuestVisibilityTriggers,
+  updateQuestObjectivesFromEvents,
 } from "./state";
 
 function countFaces(roll: DieFace[], face: DieFace): number {
@@ -552,6 +554,54 @@ function validateOpenDoor(state: GameState, action: OpenDoorAction): ValidationR
   return { ok: true };
 }
 
+function validateInteract(state: GameState, action: InteractAction): ValidationResult {
+  const actor = state.actors[action.actorId];
+  if (!actor) {
+    return { ok: false, reason: "Actor not found" };
+  }
+  if (actor.health <= 0) {
+    return { ok: false, reason: "Actor is defeated" };
+  }
+  if (currentActorId(state) !== actor.id) {
+    return { ok: false, reason: "It is not this actor's turn" };
+  }
+
+  if (action.targetType !== "furniture") {
+    return { ok: false, reason: "Unsupported interaction target" };
+  }
+
+  const furniture = state.quest.furniture[action.targetId];
+  if (!furniture) {
+    return { ok: false, reason: "Interaction target not found" };
+  }
+
+  if (!furniture.interaction) {
+    return { ok: false, reason: "Target cannot be interacted with" };
+  }
+
+  const interaction = furniture.interaction;
+
+  if (
+    interaction.allowedFactions &&
+    !interaction.allowedFactions.includes(actor.faction)
+  ) {
+    return { ok: false, reason: "Actor cannot interact with this object" };
+  }
+
+  if (interaction.once && state.quest.interactionHistory[action.targetId]) {
+    return { ok: false, reason: "This object has already been used" };
+  }
+
+  const requiresAdjacency = interaction.requiresAdjacency ?? true;
+  if (requiresAdjacency) {
+    if (manhattanDistance(actor.position, furniture.position) !== 1) {
+      return { ok: false, reason: "Actor is not adjacent to the object" };
+    }
+  }
+
+  return { ok: true };
+}
+
 export function validateAction(state: GameState, action: Action): ValidationResult {
   switch (action.type) {
     case "move":
@@ -568,6 +618,8 @@ export function validateAction(state: GameState, action: Action): ValidationResu
       return validateTriggerQuestVisibility(state, action);
     case "openDoor":
       return validateOpenDoor(state, action);
+    case "interact":
+      return validateInteract(state, action);
     case "endTurn":
       if (!state.actors[action.actorId]) {
         return { ok: false, reason: "Actor not found" };
@@ -758,6 +810,70 @@ function applyOpenDoor(state: GameState, action: OpenDoorAction) {
   return { state: nextState, events };
 }
 
+function applyInteract(state: GameState, action: InteractAction) {
+  let nextState = cloneGameState(state);
+  const furniture = nextState.quest.furniture[action.targetId];
+  if (!furniture || !furniture.interaction) {
+    throw new Error("Interaction target not found");
+  }
+
+  if (furniture.interaction.once) {
+    nextState.quest.interactionHistory[action.targetId] = true;
+  }
+
+  const events: GameEvent[] = [
+    {
+      type: "interactionPerformed",
+      actorId: action.actorId,
+      targetType: action.targetType,
+      targetId: action.targetId,
+      scriptId: furniture.interaction.scriptId,
+    },
+  ];
+
+  if (furniture.interaction.scriptId) {
+    const scriptResult = triggerQuestVisibility(nextState, {
+      type: "script",
+      scriptId: furniture.interaction.scriptId,
+    });
+    nextState = scriptResult.state;
+    events.push(...scriptResult.events);
+  }
+
+  return { state: nextState, events };
+}
+
+function collectDefeatedActorEvents(previous: GameState, next: GameState): GameEvent[] {
+  const events: GameEvent[] = [];
+  Object.values(previous.actors).forEach((actor) => {
+    const nextActor = next.actors[actor.id];
+    if (!nextActor) {
+      return;
+    }
+    if (actor.health > 0 && nextActor.health <= 0) {
+      events.push({
+        type: "actorDefeated",
+        actorId: actor.id,
+        faction: actor.faction,
+      });
+    }
+  });
+  return events;
+}
+
+function finalizeActionResult(
+  previous: GameState,
+  result: { state: GameState; events: GameEvent[] }
+): { state: GameState; events: GameEvent[] } {
+  const defeatEvents = collectDefeatedActorEvents(previous, result.state);
+  let events = [...result.events, ...defeatEvents];
+  const objectivesEvent = updateQuestObjectivesFromEvents(result.state, events);
+  if (objectivesEvent) {
+    events = [...events, objectivesEvent];
+  }
+  return { state: result.state, events };
+}
+
 export function applyAction(
   state: GameState,
   action: Action
@@ -767,28 +883,39 @@ export function applyAction(
     throw new Error(validation.reason);
   }
 
-    switch (action.type) {
-      case "move":
-        return applyMove(state, action);
-      case "search":
-        return applySearch(state, action);
-      case "castSpell":
-        return applyCastSpell(state, action);
-      case "useEquipment":
-        return applyUseEquipment(state, action);
-      case "triggerQuestVisibility":
-        return applyTriggerQuestVisibility(state, action);
-      case "openDoor":
-        return applyOpenDoor(state, action);
-      case "attack": {
+  let baseResult: { state: GameState; events: GameEvent[] };
+
+  switch (action.type) {
+    case "move":
+      baseResult = applyMove(state, action);
+      break;
+    case "search":
+      baseResult = applySearch(state, action);
+      break;
+    case "castSpell":
+      baseResult = applyCastSpell(state, action);
+      break;
+    case "useEquipment":
+      baseResult = applyUseEquipment(state, action);
+      break;
+    case "triggerQuestVisibility":
+      baseResult = applyTriggerQuestVisibility(state, action);
+      break;
+    case "openDoor":
+      baseResult = applyOpenDoor(state, action);
+      break;
+    case "interact":
+      baseResult = applyInteract(state, action);
+      break;
+    case "attack": {
       const nextState = cloneGameState(state);
       const attacker = nextState.actors[action.attackerId];
       const target = nextState.actors[action.targetId];
 
       const attackSkulls = countFaces(action.attackRoll, "skull");
-        const defenseShields =
-          countFaces(action.defenseRoll, "white-shield") +
-          countFaces(action.defenseRoll, "black-shield");
+      const defenseShields =
+        countFaces(action.defenseRoll, "white-shield") +
+        countFaces(action.defenseRoll, "black-shield");
 
       const damage = Math.max(0, attackSkulls - defenseShields);
       target.health = Math.max(0, target.health - damage);
@@ -800,14 +927,15 @@ export function applyAction(
         attackRoll: action.attackRoll,
         defenseRoll: action.defenseRoll,
         damage,
-          attackSuccesses: attackSkulls,
-          defenseSuccesses: defenseShields,
-          critical: damage > 0 && attackSkulls === attacker.attackDice,
+        attackSuccesses: attackSkulls,
+        defenseSuccesses: defenseShields,
+        critical: damage > 0 && attackSkulls === attacker.attackDice,
         targetHealth: target.health,
         targetDefeated: target.health === 0,
       };
 
-      return { state: nextState, events: [attackEvent] };
+      baseResult = { state: nextState, events: [attackEvent] };
+      break;
     }
     case "endTurn": {
       const nextState = cloneGameState(state);
@@ -834,7 +962,7 @@ export function applyAction(
       const newActor = nextState.actors[newActorId];
       nextState.turn.movementRemaining[newActorId] = newActor.movement;
 
-      return {
+      baseResult = {
         state: nextState,
         events: [
           {
@@ -844,10 +972,14 @@ export function applyAction(
           },
         ],
       };
+      break;
     }
     default:
-      return { state, events: [] };
+      baseResult = { state, events: [] };
+      break;
   }
+
+  return finalizeActionResult(state, baseResult);
 }
 
 export const rulesEngine = { validateAction, applyAction };
