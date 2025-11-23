@@ -11,6 +11,8 @@ export type ActorState = {
   faction: ActorFaction;
   position: Vector2;
   movement: number;
+  attackDice: number;
+  defenseDice: number;
   health: number;
   maxHealth: number;
 };
@@ -44,7 +46,17 @@ export type EndTurnAction = {
   actorId: string;
 };
 
-export type Action = MoveAction | EndTurnAction;
+export type DieFace = "skull" | "white-shield" | "black-shield";
+
+export type AttackAction = {
+  type: "attack";
+  attackerId: string;
+  targetId: string;
+  attackRoll: DieFace[];
+  defenseRoll: DieFace[];
+};
+
+export type Action = MoveAction | AttackAction | EndTurnAction;
 
 export type ValidationResult =
   | { ok: true }
@@ -63,7 +75,18 @@ export type TurnEndedEvent = {
   nextActorId: string;
 };
 
-export type GameEvent = MoveEvent | TurnEndedEvent;
+export type AttackResolvedEvent = {
+  type: "attackResolved";
+  attackerId: string;
+  targetId: string;
+  attackRoll: DieFace[];
+  defenseRoll: DieFace[];
+  damage: number;
+  targetHealth: number;
+  targetDefeated: boolean;
+};
+
+export type GameEvent = MoveEvent | TurnEndedEvent | AttackResolvedEvent;
 
 export interface RulesEngine {
   validateAction(state: GameState, action: Action): ValidationResult;

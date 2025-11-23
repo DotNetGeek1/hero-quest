@@ -1,5 +1,8 @@
 import {
   Action,
+  AttackAction,
+  AttackResolvedEvent,
+  DieFace,
   GameEvent,
   GameState,
   MoveAction,
@@ -13,6 +16,46 @@ import {
   isWithinBounds,
   manhattanDistance,
 } from "./state";
+
+function countFaces(roll: DieFace[], face: DieFace): number {
+  return roll.filter((value) => value === face).length;
+}
+
+function validateAttack(state: GameState, action: AttackAction): ValidationResult {
+  const attacker = state.actors[action.attackerId];
+  const target = state.actors[action.targetId];
+
+  if (!attacker) {
+    return { ok: false, reason: "Attacker not found" };
+  }
+
+  if (!target) {
+    return { ok: false, reason: "Target not found" };
+  }
+
+  if (currentActorId(state) !== action.attackerId) {
+    return { ok: false, reason: "It is not this actor's turn" };
+  }
+
+  const distance = manhattanDistance(attacker.position, target.position);
+  if (distance !== 1) {
+    return { ok: false, reason: "Target is not adjacent" };
+  }
+
+  if (target.health <= 0) {
+    return { ok: false, reason: "Target is already defeated" };
+  }
+
+  if (action.attackRoll.length !== attacker.attackDice) {
+    return { ok: false, reason: "Attack roll count does not match attack dice" };
+  }
+
+  if (action.defenseRoll.length !== target.defenseDice) {
+    return { ok: false, reason: "Defense roll count does not match defense dice" };
+  }
+
+  return { ok: true };
+}
 
 function validateMove(state: GameState, action: MoveAction): ValidationResult {
   const actor = state.actors[action.actorId];
@@ -53,6 +96,8 @@ export function validateAction(state: GameState, action: Action): ValidationResu
   switch (action.type) {
     case "move":
       return validateMove(state, action);
+    case "attack":
+      return validateAttack(state, action);
     case "endTurn":
       if (!state.actors[action.actorId]) {
         return { ok: false, reason: "Actor not found" };
@@ -100,6 +145,32 @@ export function applyAction(
   switch (action.type) {
     case "move":
       return applyMove(state, action);
+    case "attack": {
+      const nextState = cloneGameState(state);
+      const attacker = nextState.actors[action.attackerId];
+      const target = nextState.actors[action.targetId];
+
+      const attackSkulls = countFaces(action.attackRoll, "skull");
+      const defenseShields =
+        countFaces(action.defenseRoll, "white-shield") +
+        countFaces(action.defenseRoll, "black-shield");
+
+      const damage = Math.max(0, attackSkulls - defenseShields);
+      target.health = Math.max(0, target.health - damage);
+
+      const attackEvent: AttackResolvedEvent = {
+        type: "attackResolved",
+        attackerId: attacker.id,
+        targetId: target.id,
+        attackRoll: action.attackRoll,
+        defenseRoll: action.defenseRoll,
+        damage,
+        targetHealth: target.health,
+        targetDefeated: target.health === 0,
+      };
+
+      return { state: nextState, events: [attackEvent] };
+    }
     case "endTurn": {
       const nextState = cloneGameState(state);
       const previousActorId = currentActorId(nextState) as string;
