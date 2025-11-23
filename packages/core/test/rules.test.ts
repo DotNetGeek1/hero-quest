@@ -877,6 +877,168 @@ describe("rulesEngine.applyAction", () => {
       });
     });
 
+  describe("status duration handling", () => {
+    it("removes finite status effects when their duration expires at end of turn", () => {
+      const board = { width: 3, height: 3, blocked: [] };
+      const actors = [
+        {
+          id: "hero-1",
+          name: "Wizard",
+          faction: "hero" as const,
+          position: { x: 0, y: 0 },
+          movement: 5,
+          attackDice: 3,
+          attackRange: 3,
+          defenseDice: 2,
+          health: 5,
+          maxHealth: 5,
+          knownSpells: ["berserk"],
+        },
+        {
+          id: "monster-1",
+          name: "Goblin",
+          faction: "monster" as const,
+          position: { x: 2, y: 2 },
+          movement: 5,
+          attackDice: 2,
+          attackRange: 1,
+          defenseDice: 2,
+          health: 3,
+          maxHealth: 3,
+        },
+      ];
+
+      const cards = {
+        spells: {
+          berserk: {
+            id: "berserk",
+            name: "Berserker Fury",
+            school: "fire",
+            target: { type: "self" as const, range: 0 },
+            effects: [
+              {
+                type: "status" as const,
+                effect: {
+                  id: "berserk-status",
+                  name: "Berserk",
+                  duration: 1,
+                  modifiers: { attackDice: 2 },
+                },
+              },
+            ],
+          },
+        },
+        equipment: {},
+      };
+
+      let state = createGameState({
+        board,
+        actors,
+        cards,
+        turnOrder: ["hero-1", "monster-1"],
+      });
+
+      state = applyAction(state, {
+        type: "castSpell",
+        casterId: "hero-1",
+        spellId: "berserk",
+      }).state;
+
+      expect(state.actors["hero-1"].attackDice).toBe(5);
+      expect(state.actors["hero-1"].statusEffects).toHaveLength(1);
+
+      const { state: afterEnd } = applyAction(state, { type: "endTurn", actorId: "hero-1" });
+      expect(afterEnd.actors["hero-1"].attackDice).toBe(3);
+      expect(afterEnd.actors["hero-1"].statusEffects).toEqual([]);
+    });
+
+    it("ticks multi-turn statuses down one per turn until removed", () => {
+      const board = { width: 3, height: 3, blocked: [] };
+      const actors = [
+        {
+          id: "hero-1",
+          name: "Cleric",
+          faction: "hero" as const,
+          position: { x: 0, y: 0 },
+          movement: 4,
+          attackDice: 2,
+          attackRange: 2,
+          defenseDice: 2,
+          health: 6,
+          maxHealth: 6,
+          knownSpells: ["battle-hymn"],
+        },
+        {
+          id: "monster-1",
+          name: "Skeleton",
+          faction: "monster" as const,
+          position: { x: 2, y: 2 },
+          movement: 4,
+          attackDice: 2,
+          attackRange: 1,
+          defenseDice: 2,
+          health: 2,
+          maxHealth: 2,
+        },
+      ];
+
+      const cards = {
+        spells: {
+          "battle-hymn": {
+            id: "battle-hymn",
+            name: "Battle Hymn",
+            school: "spirit",
+            target: { type: "self" as const, range: 0 },
+            effects: [
+              {
+                type: "status" as const,
+                effect: {
+                  id: "battle-hymn-status",
+                  name: "Battle Hymn",
+                  duration: 2,
+                  modifiers: { attackDice: 1 },
+                },
+              },
+            ],
+          },
+        },
+        equipment: {},
+      };
+
+      let state = createGameState({
+        board,
+        actors,
+        cards,
+        turnOrder: ["hero-1", "monster-1"],
+      });
+
+      state = applyAction(state, {
+        type: "castSpell",
+        casterId: "hero-1",
+        spellId: "battle-hymn",
+      }).state;
+
+      expect(state.actors["hero-1"].attackDice).toBe(3);
+      expect(state.actors["hero-1"].statusEffects?.[0]?.duration).toBe(2);
+
+      const { state: afterHeroEnd } = applyAction(state, { type: "endTurn", actorId: "hero-1" });
+      expect(afterHeroEnd.actors["hero-1"].statusEffects?.[0]?.duration).toBe(1);
+
+      const { state: afterMonsterEnd } = applyAction(afterHeroEnd, {
+        type: "endTurn",
+        actorId: "monster-1",
+      });
+
+      const { state: afterSecondHeroEnd } = applyAction(afterMonsterEnd, {
+        type: "endTurn",
+        actorId: "hero-1",
+      });
+
+      expect(afterSecondHeroEnd.actors["hero-1"].statusEffects).toEqual([]);
+      expect(afterSecondHeroEnd.actors["hero-1"].attackDice).toBe(2);
+    });
+  });
+
     describe("visibility triggers", () => {
     const board = {
       width: 4,
@@ -1035,5 +1197,93 @@ describe("rulesEngine.applyAction", () => {
         const ownerKeys = result.events.map((event) => event.ownerKey).sort();
         expect(ownerKeys).toEqual(["hero-1", "hero-2"]);
       });
+
+    it("validates trigger quest visibility actions and rejects missing contexts", () => {
+      const boardWithTriggers = {
+        ...board,
+        visibilityTriggers: [
+          {
+            id: "door-1-trigger",
+            source: "door" as const,
+            doorId: "entrance",
+            owner: { type: "actor" as const, actorId: "hero-1" },
+            areaIds: ["room-1"],
+          },
+        ],
+      };
+
+      const state = createGameState({
+        board: boardWithTriggers,
+        actors: baseActors,
+        visibility: perActorVisibility,
+        turnOrder: ["hero-1", "hero-2"],
+      });
+
+      const validAction: Action = {
+        type: "triggerQuestVisibility",
+        actorId: "hero-1",
+        context: { type: "door", doorId: "entrance" },
+      };
+      expect(validateAction(state, validAction)).toEqual({ ok: true });
+
+      const wrongTurn: Action = {
+        ...validAction,
+        actorId: "hero-2",
+      };
+      expect(validateAction(state, wrongTurn)).toEqual({
+        ok: false,
+        reason: "It is not this actor's turn",
+      });
+
+      const missingTrigger: Action = {
+        type: "triggerQuestVisibility",
+        actorId: "hero-1",
+        context: { type: "door", doorId: "unknown" },
+      };
+      expect(validateAction(state, missingTrigger)).toEqual({
+        ok: false,
+        reason: "No matching visibility triggers",
+      });
+    });
+
+    it("applies quest visibility actions and emits tiles revealed events", () => {
+      const boardWithTriggers = {
+        ...board,
+        visibilityTriggers: [
+          {
+            id: "door-1-trigger",
+            source: "door" as const,
+            doorId: "entrance",
+            owner: { type: "actor" as const, actorId: "hero-1" },
+            areaIds: ["room-1"],
+          },
+        ],
+      };
+
+      const state = createGameState({
+        board: boardWithTriggers,
+        actors: baseActors,
+        visibility: perActorVisibility,
+        turnOrder: ["hero-1", "hero-2"],
+      });
+
+      const action: Action = {
+        type: "triggerQuestVisibility",
+        actorId: "hero-1",
+        context: { type: "door", doorId: "entrance" },
+      };
+
+      const first = applyAction(state, action);
+      expect(first.events).toHaveLength(1);
+      expect(first.events[0]).toMatchObject({
+        type: "tilesRevealed",
+        ownerKey: "hero-1",
+        source: "door",
+      });
+      expect(first.state.visibility.triggerHistory["door-1-trigger"]).toBe(true);
+
+      const second = applyAction(first.state, action);
+      expect(second.events).toHaveLength(0);
+    });
   });
 });

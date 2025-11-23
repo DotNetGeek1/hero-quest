@@ -226,13 +226,20 @@ export type UseEquipmentAction = {
   targetId?: string;
 };
 
+export type TriggerQuestVisibilityAction = {
+  type: "triggerQuestVisibility";
+  actorId: string;
+  context: QuestVisibilityTriggerContext;
+};
+
 export type Action =
   | MoveAction
   | AttackAction
   | EndTurnAction
   | SearchAction
   | CastSpellAction
-  | UseEquipmentAction;
+  | UseEquipmentAction
+  | TriggerQuestVisibilityAction;
 
 export type ValidationResult =
   | { ok: true }

@@ -5,6 +5,7 @@ import {
   CardCatalog,
   DiscoverableState,
   GameState,
+  QuestVisibilityTrigger,
   QuestVisibilityTriggerContext,
   SearchArea,
   SearchRulesConfig,
@@ -482,20 +483,32 @@ export function triggerVisibilityReveal(
   return { state: nextState, events };
 }
 
+function questTriggerMatchesContext(
+  trigger: QuestVisibilityTrigger,
+  context: QuestVisibilityTriggerContext
+): boolean {
+  if (context.type === "door" && trigger.source === "door") {
+    return trigger.doorId === context.doorId;
+  }
+  if (context.type === "script" && trigger.source === "script") {
+    return trigger.scriptId === context.scriptId;
+  }
+  return false;
+}
+
+export function findQuestVisibilityTriggers(
+  board: BoardState,
+  context: QuestVisibilityTriggerContext
+): QuestVisibilityTrigger[] {
+  const triggers = board.visibilityTriggers ?? [];
+  return triggers.filter((trigger) => questTriggerMatchesContext(trigger, context));
+}
+
 export function triggerQuestVisibility(
   state: GameState,
   context: QuestVisibilityTriggerContext
 ): { state: GameState; events: TilesRevealedEvent[] } {
-  const triggers = state.board.visibilityTriggers ?? [];
-  const matching = triggers.filter((trigger) => {
-    if (context.type === "door" && trigger.source === "door") {
-      return trigger.doorId === context.doorId;
-    }
-    if (context.type === "script" && trigger.source === "script") {
-      return trigger.scriptId === context.scriptId;
-    }
-    return false;
-  });
+  const matching = findQuestVisibilityTriggers(state.board, context);
 
   if (matching.length === 0) {
     return { state: cloneGameState(state), events: [] };

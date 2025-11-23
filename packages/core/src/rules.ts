@@ -18,6 +18,7 @@ import {
   StatusEffectState,
   StatusModifierStat,
   TargetingProfile,
+  TriggerQuestVisibilityAction,
   UseEquipmentAction,
   ValidationResult,
 } from "./types";
@@ -37,6 +38,8 @@ import {
   mergeVisibility,
   getVisibilityOwnerKey,
   tileKey,
+  triggerQuestVisibility,
+  findQuestVisibilityTriggers,
 } from "./state";
 
 function countFaces(roll: DieFace[], face: DieFace): number {
@@ -252,6 +255,23 @@ function applyCleanseEffect(
     }
     return false;
   });
+}
+
+function tickActorStatusEffects(target: ActorState) {
+  if (!target.statusEffects || target.statusEffects.length === 0) {
+    return;
+  }
+
+  target.statusEffects.forEach((status) => {
+    if (Number.isFinite(status.duration)) {
+      status.duration = Math.max(0, status.duration - 1);
+    }
+  });
+
+  removeStatusEffects(
+    target,
+    (status) => Number.isFinite(status.duration) && status.duration <= 0
+  );
 }
 
 function applyEffectsToActor(state: GameState, target: ActorState, effects: SpellEffect[]) {
@@ -477,6 +497,29 @@ function validateUseEquipment(state: GameState, action: UseEquipmentAction): Val
   return { ok: true };
 }
 
+function validateTriggerQuestVisibility(
+  state: GameState,
+  action: TriggerQuestVisibilityAction
+): ValidationResult {
+  const actor = state.actors[action.actorId];
+  if (!actor) {
+    return { ok: false, reason: "Actor not found" };
+  }
+  if (actor.health <= 0) {
+    return { ok: false, reason: "Actor is defeated" };
+  }
+  if (currentActorId(state) !== actor.id) {
+    return { ok: false, reason: "It is not this actor's turn" };
+  }
+
+  const triggers = findQuestVisibilityTriggers(state.board, action.context);
+  if (triggers.length === 0) {
+    return { ok: false, reason: "No matching visibility triggers" };
+  }
+
+  return { ok: true };
+}
+
 export function validateAction(state: GameState, action: Action): ValidationResult {
   switch (action.type) {
     case "move":
@@ -489,6 +532,8 @@ export function validateAction(state: GameState, action: Action): ValidationResu
       return validateCastSpell(state, action);
     case "useEquipment":
       return validateUseEquipment(state, action);
+    case "triggerQuestVisibility":
+      return validateTriggerQuestVisibility(state, action);
     case "endTurn":
       if (!state.actors[action.actorId]) {
         return { ok: false, reason: "Actor not found" };
@@ -646,6 +691,11 @@ function applyUseEquipment(state: GameState, action: UseEquipmentAction) {
   return { state: nextState, events };
 }
 
+function applyTriggerQuestVisibility(state: GameState, action: TriggerQuestVisibilityAction) {
+  const result = triggerQuestVisibility(state, action.context);
+  return { state: result.state, events: result.events };
+}
+
 export function applyAction(
   state: GameState,
   action: Action
@@ -664,6 +714,8 @@ export function applyAction(
       return applyCastSpell(state, action);
     case "useEquipment":
       return applyUseEquipment(state, action);
+    case "triggerQuestVisibility":
+      return applyTriggerQuestVisibility(state, action);
     case "attack": {
       const nextState = cloneGameState(state);
       const attacker = nextState.actors[action.attackerId];
@@ -696,6 +748,10 @@ export function applyAction(
     case "endTurn": {
       const nextState = cloneGameState(state);
       const previousActorId = currentActorId(nextState) as string;
+      const previousActor = nextState.actors[previousActorId];
+      if (previousActor) {
+        tickActorStatusEffects(previousActor);
+      }
       const orderLength = nextState.turn.order.length;
 
       for (let step = 1; step <= orderLength; step += 1) {
