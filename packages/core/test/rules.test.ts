@@ -21,6 +21,8 @@ function buildGameState(options: SetupOptions = {}): GameState {
       faction: "hero" as const,
       position: { x: 0, y: 0 },
       movement: 4,
+      attackDice: 3,
+      defenseDice: 2,
       health: 8,
       maxHealth: 8,
     },
@@ -30,6 +32,8 @@ function buildGameState(options: SetupOptions = {}): GameState {
       faction: "monster" as const,
       position: { x: 2, y: 2 },
       movement: 5,
+      attackDice: 2,
+      defenseDice: 2,
       health: 3,
       maxHealth: 3,
     },
@@ -100,5 +104,60 @@ describe("rulesEngine.applyAction", () => {
 
     expect(currentActorId(result.state)).toBe("monster-1");
     expect(result.state.turn.movementRemaining["monster-1"]).toBe(5);
+  });
+
+  it("resolves an attack using provided dice rolls and emits an event", () => {
+    const state = applyAction(buildGameState(), {
+      type: "move",
+      actorId: "hero-1",
+      to: { x: 2, y: 1 },
+    }).state;
+    const attackAction: Action = {
+      type: "attack",
+      attackerId: "hero-1",
+      targetId: "monster-1",
+      attackRoll: ["skull", "skull", "skull"],
+      defenseRoll: ["black-shield", "white-shield"],
+    };
+
+    const { state: nextState, events } = applyAction(state, attackAction);
+
+    expect(nextState.actors["monster-1"].health).toBe(2);
+    expect(events[0]).toEqual({
+      type: "attackResolved",
+      attackerId: "hero-1",
+      targetId: "monster-1",
+      attackRoll: ["skull", "skull", "skull"],
+      defenseRoll: ["black-shield", "white-shield"],
+      damage: 1,
+      targetHealth: 2,
+      targetDefeated: false,
+    });
+  });
+
+  it("rejects invalid attack setups including distance and roll counts", () => {
+    const state = buildGameState();
+    const tooFar: Action = {
+      type: "attack",
+      attackerId: "hero-1",
+      targetId: "monster-1",
+      attackRoll: ["skull", "skull", "skull"],
+      defenseRoll: ["white-shield", "white-shield"],
+    };
+    expect(validateAction(state, tooFar)).toEqual({ ok: false, reason: "Target is not adjacent" });
+
+    const adjacentMove: Action = { type: "move", actorId: "hero-1", to: { x: 2, y: 1 } };
+    const afterMove = applyAction(state, adjacentMove).state;
+    const wrongDiceCount: Action = {
+      type: "attack",
+      attackerId: "hero-1",
+      targetId: "monster-1",
+      attackRoll: ["skull"],
+      defenseRoll: ["white-shield"],
+    };
+    expect(validateAction(afterMove, wrongDiceCount)).toEqual({
+      ok: false,
+      reason: "Attack roll count does not match attack dice",
+    });
   });
 });
