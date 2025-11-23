@@ -55,6 +55,7 @@ export type VisibilityTrigger = {
   owner?: VisibilityTriggerOwner;
   areaIds?: string[];
   tiles?: Vector2[];
+  effects?: QuestTriggerEffect[];
 };
 
 export type QuestVisibilityTrigger =
@@ -76,6 +77,32 @@ export type DiscoverableState = {
   data?: Record<string, unknown>;
 };
 
+export type DoorState = {
+  id: string;
+  position: Vector2;
+  open: boolean;
+  locked?: boolean;
+};
+
+export type FurnitureState = {
+  id: string;
+  name: string;
+  position: Vector2;
+  blocking?: boolean;
+  data?: Record<string, unknown>;
+};
+
+export type QuestDialogEntry = {
+  id: string;
+  speaker?: string;
+  text: string;
+};
+
+export type QuestState = {
+  furniture: Record<string, FurnitureState>;
+  dialogQueue: QuestDialogEntry[];
+};
+
 export type SearchHistoryMode = "per-area" | "per-hero";
 
 export type SearchRulesConfig = {
@@ -94,12 +121,31 @@ export type SearchState = {
   history: SearchHistory;
 };
 
+export type QuestTriggerEffect =
+  | {
+      type: "spawnActors";
+      actors: ActorState[];
+    }
+  | {
+      type: "addDiscoverables";
+      discoverables: DiscoverableState[];
+    }
+  | {
+      type: "enqueueDialog";
+      entries: QuestDialogEntry[];
+    }
+  | {
+      type: "placeFurniture";
+      furniture: FurnitureState[];
+    };
+
 export type BoardState = {
   width: number;
   height: number;
   blocked: Vector2[];
   areas?: SearchArea[];
   visibilityTriggers?: QuestVisibilityTrigger[];
+  doors?: DoorState[];
 };
 
 export type TurnState = {
@@ -183,6 +229,7 @@ export type GameState = {
   searchState: SearchState;
   cards: CardCatalog;
   visibility: VisibilityState;
+  quest: QuestState;
 };
 
 export type MoveAction = {
@@ -232,6 +279,12 @@ export type TriggerQuestVisibilityAction = {
   context: QuestVisibilityTriggerContext;
 };
 
+export type OpenDoorAction = {
+  type: "openDoor";
+  actorId: string;
+  doorId: string;
+};
+
 export type Action =
   | MoveAction
   | AttackAction
@@ -239,7 +292,8 @@ export type Action =
   | SearchAction
   | CastSpellAction
   | UseEquipmentAction
-  | TriggerQuestVisibilityAction;
+  | TriggerQuestVisibilityAction
+  | OpenDoorAction;
 
 export type ValidationResult =
   | { ok: true }
@@ -294,6 +348,33 @@ export type TilesRevealedEvent = {
   triggerId?: string;
 };
 
+export type DoorOpenedEvent = {
+  type: "doorOpened";
+  actorId: string;
+  doorId: string;
+  position: Vector2;
+};
+
+export type ActorsSpawnedEvent = {
+  type: "actorsSpawned";
+  actorIds: string[];
+};
+
+export type DiscoverablesAddedEvent = {
+  type: "discoverablesAdded";
+  discoverableIds: string[];
+};
+
+export type FurniturePlacedEvent = {
+  type: "furniturePlaced";
+  furnitureIds: string[];
+};
+
+export type DialogEnqueuedEvent = {
+  type: "dialogEnqueued";
+  entries: QuestDialogEntry[];
+};
+
 export type SpellCastEvent = {
   type: "spellCast";
   casterId: string;
@@ -317,6 +398,11 @@ export type GameEvent =
   | AttackResolvedEvent
   | SearchPerformedEvent
   | TilesRevealedEvent
+  | DoorOpenedEvent
+  | ActorsSpawnedEvent
+  | DiscoverablesAddedEvent
+  | FurniturePlacedEvent
+  | DialogEnqueuedEvent
   | SpellCastEvent
   | EquipmentUsedEvent;
 

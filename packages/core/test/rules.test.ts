@@ -153,6 +153,62 @@ describe("rulesEngine.validateAction", () => {
       reason: "Target is beyond attack range",
     });
     });
+
+    it("validates openDoor actions with adjacency and locking rules", () => {
+      const hero = {
+        id: "hero-1",
+        name: "Barbarian",
+        faction: "hero" as const,
+        position: { x: 0, y: 0 },
+        movement: 4,
+        attackDice: 3,
+        attackRange: 1,
+        defenseDice: 2,
+        health: 8,
+        maxHealth: 8,
+      };
+
+      const unlockedBoard = {
+        width: 3,
+        height: 3,
+        blocked: [],
+        doors: [{ id: "door-1", position: { x: 1, y: 0 }, open: false }],
+      };
+
+      const lockedBoard = {
+        ...unlockedBoard,
+        doors: [{ ...unlockedBoard.doors[0], locked: true }],
+      };
+
+      const baseState = createGameState({
+        board: unlockedBoard,
+        actors: [hero],
+        turnOrder: ["hero-1"],
+      });
+
+      const validAction: Action = { type: "openDoor", actorId: "hero-1", doorId: "door-1" };
+      expect(validateAction(baseState, validAction)).toEqual({ ok: true });
+
+      const distantState = createGameState({
+        board: unlockedBoard,
+        actors: [{ ...hero, position: { x: 2, y: 2 } }],
+        turnOrder: ["hero-1"],
+      });
+      expect(validateAction(distantState, validAction)).toEqual({
+        ok: false,
+        reason: "Door is not adjacent",
+      });
+
+      const lockedState = createGameState({
+        board: lockedBoard,
+        actors: [hero],
+        turnOrder: ["hero-1"],
+      });
+      expect(validateAction(lockedState, validAction)).toEqual({
+        ok: false,
+        reason: "Door is locked",
+      });
+    });
 });
 
 describe("rulesEngine.applyAction", () => {
@@ -1039,6 +1095,131 @@ describe("rulesEngine.applyAction", () => {
     });
   });
 
+    describe("openDoor action", () => {
+      it("opens doors, reveals linked tiles, and runs quest trigger effects", () => {
+        const board = {
+          width: 4,
+          height: 4,
+          blocked: [],
+          areas: [
+            {
+              id: "room-1",
+              name: "Hall",
+              kind: "room" as const,
+              tiles: [
+                { x: 1, y: 1 },
+                { x: 2, y: 1 },
+              ],
+            },
+          ],
+          doors: [{ id: "door-1", position: { x: 1, y: 0 }, open: false }],
+          visibilityTriggers: [
+            {
+              id: "door-1-trigger",
+              source: "door" as const,
+              doorId: "door-1",
+              owner: { type: "actor" as const, actorId: "hero-1" },
+              areaIds: ["room-1"],
+              effects: [
+                {
+                  type: "spawnActors" as const,
+                  actors: [
+                    {
+                      id: "monster-ambush",
+                      name: "Orc",
+                      faction: "monster" as const,
+                      position: { x: 3, y: 3 },
+                      movement: 6,
+                      attackDice: 3,
+                      attackRange: 1,
+                      defenseDice: 2,
+                      health: 3,
+                      maxHealth: 3,
+                    },
+                  ],
+                },
+                {
+                  type: "addDiscoverables" as const,
+                  discoverables: [
+                    {
+                      id: "treasure-1",
+                      areaId: "room-1",
+                      type: "treasure" as const,
+                      position: { x: 1, y: 1 },
+                      revealed: false,
+                    },
+                  ],
+                },
+                {
+                  type: "placeFurniture" as const,
+                  furniture: [
+                    {
+                      id: "table-1",
+                      name: "Table",
+                      position: { x: 2, y: 1 },
+                    },
+                  ],
+                },
+                {
+                  type: "enqueueDialog" as const,
+                  entries: [{ id: "dialog-1", text: "Intruders!" }],
+                },
+              ],
+            },
+          ],
+        };
+
+        const hero = {
+          id: "hero-1",
+          name: "Barbarian",
+          faction: "hero" as const,
+          position: { x: 0, y: 0 },
+          movement: 4,
+          attackDice: 3,
+          attackRange: 1,
+          defenseDice: 2,
+          health: 8,
+          maxHealth: 8,
+        };
+
+        const state = createGameState({
+          board,
+          actors: [hero],
+          turnOrder: ["hero-1"],
+        });
+
+        const result = applyAction(state, {
+          type: "openDoor",
+          actorId: "hero-1",
+          doorId: "door-1",
+        });
+
+        expect(result.state.board.doors?.[0].open).toBe(true);
+        expect(result.events.map((event) => event.type)).toEqual([
+          "doorOpened",
+          "tilesRevealed",
+          "actorsSpawned",
+          "discoverablesAdded",
+          "furniturePlaced",
+          "dialogEnqueued",
+        ]);
+        expect(result.state.actors["monster-ambush"]).toBeDefined();
+        expect(result.state.turn.order).toContain("monster-ambush");
+        expect(result.state.discoverables["treasure-1"]).toBeDefined();
+        expect(result.state.quest.furniture["table-1"]).toBeDefined();
+        expect(result.state.quest.dialogQueue).toEqual(
+          expect.arrayContaining([{ id: "dialog-1", text: "Intruders!" }])
+        );
+
+        const moveValidation = validateAction(result.state, {
+          type: "move",
+          actorId: "hero-1",
+          to: { x: 1, y: 0 },
+        });
+        expect(moveValidation).toEqual({ ok: true });
+      });
+    });
+
     describe("visibility triggers", () => {
     const board = {
       width: 4,
@@ -1169,6 +1350,50 @@ describe("rulesEngine.applyAction", () => {
         });
 
         const second = triggerQuestVisibility(first.state, { type: "door", doorId: "entrance" });
+        expect(second.events).toHaveLength(0);
+      });
+
+      it("runs quest trigger effects even when no tiles are defined", () => {
+        const boardWithScripts = {
+          ...board,
+          visibilityTriggers: [
+            {
+              id: "script-only",
+              source: "script" as const,
+              scriptId: "ambush",
+              effects: [
+                {
+                  type: "spawnActors" as const,
+                  actors: [
+                    {
+                      id: "ambush-spawn",
+                      name: "Skeleton",
+                      faction: "monster" as const,
+                      position: { x: 3, y: 3 },
+                      movement: 5,
+                      attackDice: 2,
+                      attackRange: 1,
+                      defenseDice: 2,
+                      health: 2,
+                      maxHealth: 2,
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        };
+
+        const state = createGameState({
+          board: boardWithScripts,
+          actors: baseActors,
+        });
+
+        const first = triggerQuestVisibility(state, { type: "script", scriptId: "ambush" });
+        expect(first.events.map((event) => event.type)).toContain("actorsSpawned");
+        expect(first.state.actors["ambush-spawn"]).toBeDefined();
+
+        const second = triggerQuestVisibility(first.state, { type: "script", scriptId: "ambush" });
         expect(second.events).toHaveLength(0);
       });
 
