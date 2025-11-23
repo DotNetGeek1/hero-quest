@@ -414,4 +414,263 @@ describe("rulesEngine.applyAction", () => {
       reason: "Attack roll count does not match attack dice",
     });
   });
+
+  describe("search actions", () => {
+    function buildSearchScenario(options?: { perHero?: boolean; extraHero?: boolean }) {
+      const board = {
+        width: 4,
+        height: 4,
+        blocked: [],
+        areas: [
+          {
+            id: "room-1",
+            name: "Entry",
+            kind: "room" as const,
+            tiles: [
+              { x: 0, y: 0 },
+              { x: 1, y: 0 },
+              { x: 0, y: 1 },
+              { x: 1, y: 1 },
+            ],
+          },
+        ],
+      };
+
+      const baseActors = [
+        {
+          id: "hero-1",
+          name: "Barbarian",
+          faction: "hero" as const,
+          position: { x: 0, y: 0 },
+          movement: 4,
+          attackDice: 3,
+          attackRange: 1,
+          defenseDice: 2,
+          health: 8,
+          maxHealth: 8,
+        },
+        {
+          id: "monster-1",
+          name: "Goblin",
+          faction: "monster" as const,
+          position: { x: 1, y: 0 },
+          movement: 5,
+          attackDice: 2,
+          attackRange: 1,
+          defenseDice: 2,
+          health: 3,
+          maxHealth: 3,
+        },
+      ];
+
+      if (options?.extraHero) {
+        baseActors.push({
+          id: "hero-2",
+          name: "Elf",
+          faction: "hero" as const,
+          position: { x: 0, y: 1 },
+          movement: 6,
+          attackDice: 2,
+          attackRange: 4,
+          defenseDice: 2,
+          health: 6,
+          maxHealth: 6,
+        });
+      }
+
+      return createGameState({
+        board,
+        actors: baseActors,
+        discoverables: [
+          {
+            id: "trap-1",
+            areaId: "room-1",
+            type: "trap",
+            position: { x: 1, y: 1 },
+            revealed: false,
+          },
+          {
+            id: "treasure-1",
+            areaId: "room-1",
+            type: "treasure",
+            position: { x: 0, y: 1 },
+            revealed: false,
+          },
+        ],
+        searchConfig: options?.perHero ? { historyMode: "per-hero" } : undefined,
+      });
+    }
+
+    it("requires rooms to be clear before searching and records discoveries", () => {
+      const state = buildSearchScenario();
+      const searchAction: Action = { type: "search", actorId: "hero-1", searchType: "traps" };
+
+      expect(validateAction(state, searchAction)).toEqual({
+        ok: false,
+        reason: "You cannot search while enemies are present",
+      });
+
+      state.actors["monster-1"].health = 0;
+      expect(validateAction(state, searchAction)).toEqual({ ok: true });
+
+      const { state: afterSearch, events } = applyAction(state, searchAction);
+      expect(afterSearch.discoverables["trap-1"].revealed).toBe(true);
+      expect(events[0]).toMatchObject({
+        type: "searchPerformed",
+        actorId: "hero-1",
+        discoveries: [{ id: "trap-1", type: "trap" }],
+      });
+
+      expect(() => applyAction(afterSearch, searchAction)).toThrow(
+        "This area has already been searched for that"
+      );
+    });
+
+    it("supports per-hero search history when configured", () => {
+      const state = buildSearchScenario({ perHero: true, extraHero: true });
+      state.actors["monster-1"].health = 0;
+
+      const heroOneSearch: Action = { type: "search", actorId: "hero-1", searchType: "treasure" };
+      const heroTwoSearch: Action = { type: "search", actorId: "hero-2", searchType: "treasure" };
+
+      const { state: afterFirst } = applyAction(state, heroOneSearch);
+      expect(afterFirst.discoverables["treasure-1"].revealed).toBe(true);
+
+      const { state: heroTwoTurn } = applyAction(afterFirst, {
+        type: "endTurn",
+        actorId: "hero-1",
+      });
+
+      expect(() => applyAction(heroTwoTurn, heroTwoSearch)).not.toThrow();
+    });
+  });
+
+  describe("spell and equipment actions", () => {
+    it("casts a healing spell on an ally within range", () => {
+      const board = { width: 4, height: 4, blocked: [] };
+      const actors = [
+        {
+          id: "hero-1",
+          name: "Wizard",
+          faction: "hero" as const,
+          position: { x: 0, y: 0 },
+          movement: 5,
+          attackDice: 2,
+          attackRange: 2,
+          defenseDice: 2,
+          health: 5,
+          maxHealth: 5,
+          knownSpells: ["heal-ally"],
+        },
+        {
+          id: "hero-2",
+          name: "Barbarian",
+          faction: "hero" as const,
+          position: { x: 0, y: 1 },
+          movement: 4,
+          attackDice: 3,
+          attackRange: 1,
+          defenseDice: 2,
+          health: 3,
+          maxHealth: 6,
+        },
+      ];
+
+      const cards = {
+        spells: {
+          "heal-ally": {
+            id: "heal-ally",
+            name: "Healing Water",
+            school: "water",
+            target: { type: "ally", range: 4 },
+            effects: [{ type: "heal", amount: 3 }],
+          },
+        },
+        equipment: {},
+      };
+
+      const state = createGameState({ board, actors, cards });
+      const action: Action = {
+        type: "castSpell",
+        casterId: "hero-1",
+        spellId: "heal-ally",
+        targetId: "hero-2",
+      };
+
+      const { state: afterSpell, events } = applyAction(state, action);
+      expect(afterSpell.actors["hero-2"].health).toBe(6);
+      expect(events[0]).toEqual({
+        type: "spellCast",
+        casterId: "hero-1",
+        spellId: "heal-ally",
+        targetId: "hero-2",
+        effects: [{ type: "heal", amount: 3 }],
+      });
+    });
+
+    it("consumes a damaging consumable when used", () => {
+      const board = { width: 4, height: 4, blocked: [] };
+      const actors = [
+        {
+          id: "hero-1",
+          name: "Alchemist",
+          faction: "hero" as const,
+          position: { x: 0, y: 0 },
+          movement: 5,
+          attackDice: 2,
+          attackRange: 1,
+          defenseDice: 2,
+          health: 5,
+          maxHealth: 5,
+          equipment: ["fire-bomb"],
+        },
+        {
+          id: "monster-1",
+          name: "Fimir",
+          faction: "monster" as const,
+          position: { x: 1, y: 0 },
+          movement: 5,
+          attackDice: 3,
+          attackRange: 1,
+          defenseDice: 2,
+          health: 3,
+          maxHealth: 3,
+        },
+      ];
+
+      const cards = {
+        spells: {},
+        equipment: {
+          "fire-bomb": {
+            id: "fire-bomb",
+            name: "Fire Bomb",
+            slot: "consumable" as const,
+            target: { type: "enemy", range: 2, requiresLineOfSight: true },
+            effects: [{ type: "damage", amount: 2 }],
+            consumable: true,
+          },
+        },
+      };
+
+      const state = createGameState({ board, actors, cards });
+      const action: Action = {
+        type: "useEquipment",
+        actorId: "hero-1",
+        equipmentId: "fire-bomb",
+        targetId: "monster-1",
+      };
+
+      const { state: afterUse, events } = applyAction(state, action);
+      expect(afterUse.actors["monster-1"].health).toBe(1);
+      expect(afterUse.actors["hero-1"].equipment).not.toContain("fire-bomb");
+      expect(events[0]).toEqual({
+        type: "equipmentUsed",
+        actorId: "hero-1",
+        equipmentId: "fire-bomb",
+        targetId: "monster-1",
+        effects: [{ type: "damage", amount: 2 }],
+        consumed: true,
+      });
+    });
+  });
 });

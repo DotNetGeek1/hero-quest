@@ -1,25 +1,114 @@
 import {
+  ActorState,
   Action,
   AttackAction,
   AttackResolvedEvent,
+  CastSpellAction,
   DieFace,
+  DiscoverableType,
+  EquipmentUsedEvent,
   GameEvent,
   GameState,
   MoveAction,
+  SearchAction,
+  SearchPerformedEvent,
+  SearchType,
+  SpellCastEvent,
+  SpellEffect,
+  TargetingProfile,
+  UseEquipmentAction,
   ValidationResult,
 } from "./types";
 import {
   cloneGameState,
   currentActorId,
+  findAreaContaining,
+  areaAllowsSearch,
+  hasOpposingFactionInArea,
+  hasSearchOccurred,
+  recordSearchOccurrence,
   hasLineOfSight,
   isBlocked,
   isOccupied,
   isWithinBounds,
   manhattanDistance,
+  mergeVisibility,
+  getVisibilityOwnerKey,
 } from "./state";
 
 function countFaces(roll: DieFace[], face: DieFace): number {
   return roll.filter((value) => value === face).length;
+}
+
+const SEARCH_TYPE_TO_DISCOVERABLE: Record<SearchType, DiscoverableType> = {
+  traps: "trap",
+  "secret-doors": "secret-door",
+  treasure: "treasure",
+};
+
+function discoverableMatchesSearch(searchType: SearchType, discoverableType: DiscoverableType) {
+  return SEARCH_TYPE_TO_DISCOVERABLE[searchType] === discoverableType;
+}
+
+function resolveTargetActor(
+  state: GameState,
+  sourceId: string,
+  targetId: string | undefined,
+  profile: TargetingProfile
+): { ok: true; target: ActorState } | { ok: false; reason: string } {
+  const source = state.actors[sourceId];
+  if (!source) {
+    return { ok: false, reason: "Source actor not found" };
+  }
+
+  if (profile.type === "self") {
+    if (targetId && targetId !== sourceId) {
+      return { ok: false, reason: "Spell target must be self" };
+    }
+    return { ok: true, target: source };
+  }
+
+  if (!targetId) {
+    return { ok: false, reason: "Target is required" };
+  }
+
+  const target = state.actors[targetId];
+  if (!target) {
+    return { ok: false, reason: "Target not found" };
+  }
+
+  if (target.health <= 0) {
+    return { ok: false, reason: "Target is defeated" };
+  }
+
+  if (profile.type === "ally" && target.faction !== source.faction) {
+    return { ok: false, reason: "Target must be an ally" };
+  }
+
+  if (profile.type === "enemy" && target.faction === source.faction) {
+    return { ok: false, reason: "Target must be an enemy" };
+  }
+
+  const distance = manhattanDistance(source.position, target.position);
+  if (distance > profile.range) {
+    return { ok: false, reason: "Target is beyond range" };
+  }
+
+  if (profile.requiresLineOfSight && !hasLineOfSight(state.board, source.position, target.position)) {
+    return { ok: false, reason: "Line of sight is blocked" };
+  }
+
+  return { ok: true, target };
+}
+
+function applyEffectsToActor(target: ActorState, effects: SpellEffect[]) {
+  effects.forEach((effect) => {
+    if (effect.type === "damage") {
+      target.health = Math.max(0, target.health - effect.amount);
+    } else if (effect.type === "heal") {
+      target.health = Math.min(target.maxHealth, target.health + effect.amount);
+    }
+  });
 }
 
 function validateAttack(state: GameState, action: AttackAction): ValidationResult {
@@ -116,12 +205,117 @@ function validateMove(state: GameState, action: MoveAction): ValidationResult {
   return { ok: true };
 }
 
+function validateSearch(state: GameState, action: SearchAction): ValidationResult {
+  const actor = state.actors[action.actorId];
+  if (!actor) {
+    return { ok: false, reason: "Actor not found" };
+  }
+
+  if (actor.health <= 0) {
+    return { ok: false, reason: "Actor is defeated" };
+  }
+
+  if (currentActorId(state) !== actor.id) {
+    return { ok: false, reason: "It is not this actor's turn" };
+  }
+
+  if (state.searchState.config.requireHeroesOnly && actor.faction !== "hero") {
+    return { ok: false, reason: "Only heroes may search" };
+  }
+
+  const area = findAreaContaining(state.board, actor.position);
+  if (!area) {
+    return { ok: false, reason: "Actor is not inside a searchable area" };
+  }
+
+  if (!areaAllowsSearch(area, action.searchType)) {
+    return { ok: false, reason: "This search type is not allowed here" };
+  }
+
+  if (
+    state.searchState.config.requireNoEnemies &&
+    hasOpposingFactionInArea(state, area.id, actor.faction)
+  ) {
+    return { ok: false, reason: "You cannot search while enemies are present" };
+  }
+
+  if (hasSearchOccurred(state, area.id, actor.id, action.searchType)) {
+    return { ok: false, reason: "This area has already been searched for that" };
+  }
+
+  return { ok: true };
+}
+
+function validateCastSpell(state: GameState, action: CastSpellAction): ValidationResult {
+  const caster = state.actors[action.casterId];
+  if (!caster) {
+    return { ok: false, reason: "Caster not found" };
+  }
+  if (caster.health <= 0) {
+    return { ok: false, reason: "Caster is defeated" };
+  }
+  if (currentActorId(state) !== caster.id) {
+    return { ok: false, reason: "It is not this actor's turn" };
+  }
+
+  const spell = state.cards.spells[action.spellId];
+  if (!spell) {
+    return { ok: false, reason: "Spell is not defined" };
+  }
+
+  if (!caster.knownSpells || !caster.knownSpells.includes(action.spellId)) {
+    return { ok: false, reason: "Caster does not know this spell" };
+  }
+
+  const targeting = resolveTargetActor(state, caster.id, action.targetId, spell.target);
+  if (!targeting.ok) {
+    return targeting;
+  }
+
+  return { ok: true };
+}
+
+function validateUseEquipment(state: GameState, action: UseEquipmentAction): ValidationResult {
+  const actor = state.actors[action.actorId];
+  if (!actor) {
+    return { ok: false, reason: "Actor not found" };
+  }
+  if (actor.health <= 0) {
+    return { ok: false, reason: "Actor is defeated" };
+  }
+  if (currentActorId(state) !== actor.id) {
+    return { ok: false, reason: "It is not this actor's turn" };
+  }
+
+  const equipment = state.cards.equipment[action.equipmentId];
+  if (!equipment) {
+    return { ok: false, reason: "Equipment is not defined" };
+  }
+
+  if (!actor.equipment || !actor.equipment.includes(action.equipmentId)) {
+    return { ok: false, reason: "Actor does not have this equipment" };
+  }
+
+  const targeting = resolveTargetActor(state, actor.id, action.targetId, equipment.target);
+  if (!targeting.ok) {
+    return targeting;
+  }
+
+  return { ok: true };
+}
+
 export function validateAction(state: GameState, action: Action): ValidationResult {
   switch (action.type) {
     case "move":
       return validateMove(state, action);
     case "attack":
       return validateAttack(state, action);
+    case "search":
+      return validateSearch(state, action);
+    case "castSpell":
+      return validateCastSpell(state, action);
+    case "useEquipment":
+      return validateUseEquipment(state, action);
     case "endTurn":
       if (!state.actors[action.actorId]) {
         return { ok: false, reason: "Actor not found" };
@@ -160,6 +354,113 @@ function applyMove(state: GameState, action: MoveAction) {
   return { state: nextState, events };
 }
 
+function applySearch(state: GameState, action: SearchAction) {
+  const nextState = cloneGameState(state);
+  const actor = nextState.actors[action.actorId];
+  const area = findAreaContaining(nextState.board, actor.position);
+  if (!area) {
+    throw new Error("Actor is not inside a searchable area");
+  }
+
+  const discoveries = Object.values(nextState.discoverables).filter(
+    (discoverable) =>
+      discoverable.areaId === area.id &&
+      discoverableMatchesSearch(action.searchType, discoverable.type) &&
+      !discoverable.revealed
+  );
+
+  discoveries.forEach((discoverable) => {
+    discoverable.revealed = true;
+  });
+
+  recordSearchOccurrence(nextState.searchState, area.id, actor.id, action.searchType);
+
+  const ownerKey = getVisibilityOwnerKey(nextState, actor.id);
+  nextState.visibility = mergeVisibility(nextState.visibility, ownerKey, area.tiles);
+
+  const events: GameEvent[] = [
+    {
+      type: "searchPerformed",
+      actorId: actor.id,
+      areaId: area.id,
+      searchType: action.searchType,
+      discoveries: discoveries.map((item) => ({
+        id: item.id,
+        type: item.type,
+        position: item.position,
+      })),
+    } satisfies SearchPerformedEvent,
+  ];
+
+  return { state: nextState, events };
+}
+
+function applyCastSpell(state: GameState, action: CastSpellAction) {
+  const nextState = cloneGameState(state);
+  const caster = nextState.actors[action.casterId];
+  const spell = nextState.cards.spells[action.spellId];
+  if (!caster || !spell) {
+    throw new Error("Invalid spell cast");
+  }
+
+  const targeting = resolveTargetActor(nextState, caster.id, action.targetId, spell.target);
+  if (!targeting.ok) {
+    throw new Error(targeting.reason);
+  }
+
+  applyEffectsToActor(targeting.target, spell.effects);
+
+  const events: GameEvent[] = [
+    {
+      type: "spellCast",
+      casterId: caster.id,
+      spellId: spell.id,
+      targetId: targeting.target.id,
+      effects: spell.effects,
+    } satisfies SpellCastEvent,
+  ];
+
+  return { state: nextState, events };
+}
+
+function applyUseEquipment(state: GameState, action: UseEquipmentAction) {
+  const nextState = cloneGameState(state);
+  const actor = nextState.actors[action.actorId];
+  const equipment = nextState.cards.equipment[action.equipmentId];
+  if (!actor || !equipment) {
+    throw new Error("Invalid equipment usage");
+  }
+
+  const targeting = resolveTargetActor(nextState, actor.id, action.targetId, equipment.target);
+  if (!targeting.ok) {
+    throw new Error(targeting.reason);
+  }
+
+  applyEffectsToActor(targeting.target, equipment.effects);
+
+  let consumed = false;
+  if (equipment.consumable && actor.equipment) {
+    const index = actor.equipment.indexOf(action.equipmentId);
+    if (index >= 0) {
+      actor.equipment.splice(index, 1);
+      consumed = true;
+    }
+  }
+
+  const events: GameEvent[] = [
+    {
+      type: "equipmentUsed",
+      actorId: actor.id,
+      equipmentId: equipment.id,
+      targetId: targeting.target.id,
+      effects: equipment.effects,
+      consumed,
+    } satisfies EquipmentUsedEvent,
+  ];
+
+  return { state: nextState, events };
+}
+
 export function applyAction(
   state: GameState,
   action: Action
@@ -172,6 +473,12 @@ export function applyAction(
   switch (action.type) {
     case "move":
       return applyMove(state, action);
+    case "search":
+      return applySearch(state, action);
+    case "castSpell":
+      return applyCastSpell(state, action);
+    case "useEquipment":
+      return applyUseEquipment(state, action);
     case "attack": {
       const nextState = cloneGameState(state);
       const attacker = nextState.actors[action.attackerId];

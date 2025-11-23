@@ -11,12 +11,14 @@ This plan summarizes the current progress and the next actionable steps to reach
 - Expanded `attackResolved` combat logs with hit/block counts and critical metadata for UI consumers.
 - Added a basic monster AI planner that walks toward the nearest hero and attacks when adjacent.
 - Added regression tests for multi-hero multi-monster turn orders to ensure faction sequencing stays intact.
+- Modeled room/corridor search actions (traps, secret doors, treasure) including discoverables, validation rules, fog-of-war reveals, and regression tests.
+- Defined spell/equipment schemas with actionable `castSpell`/`useEquipment` flows plus deterministic effect application and coverage.
+- Introduced reusable fog-of-war helpers (vision range BFS, visibility ownership, discovery merging) for the board engine.
+- Documented board/tile/card data formats so quests stay data-driven.
 
 ## Next Up
-- Model searching (traps, secret doors, treasure) with validation rules.
-- Define spell and equipment schemas plus corresponding actions.
-- Introduce fog-of-war/visibility helpers for the board engine.
-- Document data formats for quests, tiles, and cards to keep the rules engine data-driven.
+- Extend fog-of-war helpers to integrate with quest triggers (door reveals, scripted reveals).
+- Broaden the spell/equipment effect language (movement, status ailments, buffs/debuffs).
 
 ## Later (before Phase 2 is complete)
 - (tbd as Next Up items land)
